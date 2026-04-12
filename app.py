@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 
+os.makedirs('reports', exist_ok=True)
 
 app = Flask(__name__)
 

@@ -119,7 +119,7 @@ Takes the idea, market data, competitor landscape, and scorecard weaknesses and 
 
 | Layer | Technology |
 |-------|-----------|
-| **LLM** | Google Gemini via LangChain |
+| **LLM** | Groq API — LLaMA 3.3-70b-versatile via LangChain |
 | **Agent Framework** | LangChain (`ChatPromptTemplate`, `HumanMessage`, `SystemMessage`) |
 | **Backend** | Flask (Python 3.9+) with `stream_with_context` |
 | **Streaming** | Server-Sent Events (`text/event-stream`) |
