@@ -113,7 +113,7 @@ Here is the full analysis context:
 
 Be specific, honest, and actionable. Keep responses concise — 2-4 paragraphs max."""
 
-        from langchain.schema import HumanMessage, SystemMessage, AIMessage
+        from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
         lc_messages = [SystemMessage(content=system_prompt)]
         for msg in messages:
             if msg['role'] == 'user':
