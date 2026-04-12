@@ -10,6 +10,8 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 from dotenv import load_dotenv
 import os
+from flask import send_file
+import io
 load_dotenv()
 
 os.makedirs('reports', exist_ok=True)
@@ -17,6 +19,166 @@ os.makedirs('reports', exist_ok=True)
 app = Flask(__name__)
 
 
+# ── ADD THIS ROUTE TO YOUR app.py ──
+# Also add to imports at top of app.py:
+#   from pptx import Presentation
+#   from pptx.util import Inches, Pt
+#   from pptx.dml.color import RGBColor
+#   import io
+
+@app.route('/download_pptx', methods=['POST'])
+def download_pptx():
+    """Generate a real PPTX from slide data sent by the frontend"""
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+        import io
+
+        data = request.json
+        slides_data = data.get('slides', [])
+        idea = data.get('idea', 'ventureos')
+
+        if not slides_data:
+            return jsonify({'error': 'No slides provided'}), 400
+
+        # Theme backgrounds and accents
+        THEMES = [
+            {'bg': (0x0f, 0x17, 0x2a), 'accent': (0x81, 0x8c, 0xf8)},  # title
+            {'bg': (0x1e, 0x1b, 0x4b), 'accent': (
+                0x81, 0x8c, 0xf8)},  # theme-0
+            {'bg': (0x0f, 0x17, 0x2a), 'accent': (
+                0x38, 0xbd, 0xf8)},  # theme-1
+            {'bg': (0x7c, 0x3a, 0xed), 'accent': (
+                0xf9, 0xa8, 0xd4)},  # theme-2
+        ]
+
+        prs = Presentation()
+        prs.slide_width = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+        blank = prs.slide_layouts[6]
+
+        for i, sd in enumerate(slides_data):
+            slide = prs.slides.add_slide(blank)
+
+            # Background color — cycle through themes
+            theme = THEMES[i % len(THEMES)]
+            bg = slide.background.fill
+            bg.solid()
+            bg.fore_color.rgb = RGBColor(*theme['bg'])
+
+            accent = RGBColor(*theme['accent'])
+            white = RGBColor(0xFF, 0xFF, 0xFF)
+            white_dim = RGBColor(0xCC, 0xCC, 0xCC)
+
+            def add_text(text, left, top, width, height, size, color, bold=False, align=PP_ALIGN.LEFT, italic=False):
+                txBox = slide.shapes.add_textbox(
+                    Inches(left), Inches(top), Inches(width), Inches(height)
+                )
+                tf = txBox.text_frame
+                tf.word_wrap = True
+                p = tf.paragraphs[0]
+                p.alignment = align
+                run = p.add_run()
+                run.text = text
+                run.font.size = Pt(size)
+                run.font.color.rgb = color
+                run.font.bold = bold
+                run.font.italic = italic
+
+            # LABEL
+            label = sd.get('label', f"SLIDE {sd.get('slide_number', i+1)}")
+            add_text(label, 0.8, 0.45, 11.5, 0.4, 9, accent, bold=True)
+
+            # HEADLINE
+            headline = sd.get('headline', '')
+            if headline:
+                has_stats = bool(sd.get('stats'))
+                add_text(headline, 0.8, 0.95, 11.5,
+                         1.6 if has_stats else 2.2,
+                         28 if has_stats else 34, white)
+
+            # DIVIDER — thin rectangle
+            from pptx.util import Emu
+            div = slide.shapes.add_shape(
+                1,  # MSO_SHAPE_TYPE.RECTANGLE
+                Inches(0.8), Inches(3.0 if sd.get('stats') else 3.5),
+                Inches(0.6), Inches(0.04)
+            )
+            div.fill.solid()
+            div.fill.fore_color.rgb = accent
+            div.line.fill.background()
+
+            content_top = 3.2 if sd.get('stats') else 3.7
+
+            # BULLET POINTS
+            points = sd.get('points', [])
+            if points and not sd.get('stats'):
+                combined = '\n'.join(f'  \u2192  {p}' for p in points)
+                add_text(combined, 0.8, content_top, 11.5, 3.0, 14, white_dim)
+
+            # BODY TEXT (no bullets, no stats)
+            body = sd.get('subheadline', '')
+            if body and not points and not sd.get('stats'):
+                add_text(body, 0.8, content_top, 11.5, 2.0, 14, white_dim)
+
+            # STATS BOXES
+            stats = sd.get('stats', [])
+            if stats:
+                count = len(stats)
+                box_w = 3.4
+                gap = (11.5 - count * box_w) / (count + 1)
+                top_y = 5.1
+
+                for bi, stat in enumerate(stats):
+                    bx = 0.8 + bi * (box_w + gap) + gap
+
+                    # Box background (white 15% opacity via shape)
+                    rect = slide.shapes.add_shape(
+                        1, Inches(bx), Inches(top_y), Inches(
+                            box_w), Inches(1.6)
+                    )
+                    rect.fill.solid()
+                    rect.fill.fore_color.rgb = RGBColor(0x2a, 0x2a, 0x5a)
+                    rect.line.color.rgb = RGBColor(0x4a, 0x4a, 0x8a)
+
+                    num = stat.get('num', '')
+                    lbl = stat.get('label', '')
+                    if num:
+                        add_text(num, bx, top_y + 0.15, box_w, 0.8,
+                                 26, white, align=PP_ALIGN.CENTER)
+                    if lbl:
+                        add_text(lbl, bx, top_y + 1.1, box_w, 0.4,
+                                 9, white_dim, align=PP_ALIGN.CENTER)
+
+            # WATERMARK
+            add_text('VentureOS', 9.5, 0.15, 3.0, 0.3, 9, RGBColor(
+                0x66, 0x66, 0x88), align=PP_ALIGN.RIGHT)
+
+            # SLIDE NUMBER
+            slide_num = f"{sd.get('slide_number', i+1)} / {len(slides_data)}"
+            add_text(slide_num, 9.5, 7.05, 3.0, 0.3, 9, RGBColor(
+                0x66, 0x66, 0x88), align=PP_ALIGN.RIGHT)
+
+        # Save to buffer and return as file download
+        buf = io.BytesIO()
+        prs.save(buf)
+        buf.seek(0)
+
+        fname = idea.lower().replace(' ', '-')[:40] + '-pitch-deck.pptx'
+
+        return send_file(
+            buf,
+            mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            as_attachment=True,
+            download_name=fname
+        )
+
+    except Exception as e:
+        import traceback
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+    
 @app.route('/')
 def index():
     return render_template('index.html')
