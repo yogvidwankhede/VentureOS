@@ -3,6 +3,6 @@ langchain
 langchain-google-genai
 chromadb
 python-dotenv
-langchain
+langchain-core
 langchain-groq
 gunicorn
