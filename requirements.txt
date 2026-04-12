@@ -6,4 +6,5 @@ python-dotenv
 langchain
 langchain-core
 langchain-groq
+python-pptx
 gunicorn

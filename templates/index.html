@@ -7,7 +7,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300;400;500;600&display=swap" rel="stylesheet" />
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -687,7 +686,7 @@
   </nav>
 
   <div class="hero">
-    <div class="hero-badge">Where ideas meet instant execution</div>
+    <div class="hero-badge">Google Build with AI · WashU DevFest 2026</div>
     <h1>Your startup idea,<br/><em>fully researched</em> in minutes.</h1>
     <p class="hero-desc">Eight AI agents deliver market research, competitors, product strategy, fundability score, pivot suggestions, financial model, investor matches, and a live prototype — from one sentence.</p>
     <div class="hero-actions">
@@ -1764,160 +1763,56 @@
       showToast('⬇ Prototype downloaded as HTML file!');
     }
 
-    // ── DOWNLOAD PITCH DECK AS PPTX ──
+    // ── DOWNLOAD PITCH DECK AS PPTX (server-side via Flask) ──
     async function downloadPPTX() {
       if (!slidesGenerated) { showToast('Generate slides first, then download PPTX.'); return; }
 
       const slideEls = document.querySelectorAll('.deck-slide');
       if (!slideEls.length) { showToast('No slides found.'); return; }
 
-      // PptxGenJS is exposed as PptxGenJS global from the CDN bundle
-      const Pptx = window.PptxGenJS || window.pptxgen;
-      if (!Pptx) { showToast('❌ PPTX library not loaded yet — try again in a moment.'); return; }
-
       showToast('⏳ Building PPTX...');
 
+      // Collect slide data from the DOM
+      const THEME_MAP = {
+        'slide-theme-title': 0,
+        'slide-theme-0': 1,
+        'slide-theme-1': 2,
+        'slide-theme-2': 3,
+      };
+
+      const slidesPayload = Array.from(slideEls).map((el, i) => {
+        let themeIdx = 1;
+        el.classList.forEach(cls => { if (THEME_MAP[cls] !== undefined) themeIdx = THEME_MAP[cls]; });
+
+        const label    = el.querySelector('.slide-label')?.textContent.trim() || '';
+        const headline = el.querySelector('.slide-heading')?.textContent.trim() || '';
+        const subheadline = el.querySelector('.slide-body')?.textContent.trim() || '';
+        const points   = Array.from(el.querySelectorAll('.slide-point'))
+                           .map(p => p.textContent.replace('→','').trim()).filter(Boolean);
+        const statEls  = el.querySelectorAll('.slide-stat-box');
+        const stats    = Array.from(statEls).map(box => ({
+          num:   box.querySelector('.slide-stat-num')?.textContent.trim() || '',
+          label: box.querySelector('.slide-stat-label')?.textContent.trim() || ''
+        })).filter(s => s.num);
+
+        return { slide_number: i + 1, themeIdx, label, headline, subheadline, points, stats };
+      });
+
       try {
-        const pptx = new Pptx();
-        pptx.layout = 'LAYOUT_WIDE'; // 13.33 x 7.5 inches
-
-        // Theme → hex background colors (no transparency syntax, pure hex only)
-        const THEME_BG = {
-          'slide-theme-title': '0f172a',
-          'slide-theme-0':     '1e1b4b',
-          'slide-theme-1':     '0f172a',
-          'slide-theme-2':     '7c3aed',
-        };
-        const THEME_ACCENT = {
-          'slide-theme-title': '818cf8',
-          'slide-theme-0':     '818cf8',
-          'slide-theme-1':     '38bdf8',
-          'slide-theme-2':     'f9a8d4',
-        };
-
-        slideEls.forEach((el, i) => {
-          const slide = pptx.addSlide();
-
-          // Detect theme
-          let bgColor = '1e1b4b', accentColor = '818cf8';
-          el.classList.forEach(cls => {
-            if (THEME_BG[cls]) bgColor = THEME_BG[cls];
-            if (THEME_ACCENT[cls]) accentColor = THEME_ACCENT[cls];
-          });
-
-          slide.background = { color: bgColor };
-
-          // Pull text from DOM
-          const label   = el.querySelector('.slide-label')?.textContent.trim() || '';
-          const heading = el.querySelector('.slide-heading')?.textContent.trim() || '';
-          const body    = el.querySelector('.slide-body')?.textContent.trim() || '';
-          const points  = Array.from(el.querySelectorAll('.slide-point'))
-                            .map(p => p.textContent.replace('→','').trim()).filter(Boolean);
-          const statBoxes = el.querySelectorAll('.slide-stat-box');
-
-          // LABEL — top, small caps style
-          if (label) {
-            slide.addText(label, {
-              x: 0.8, y: 0.5, w: 11.5, h: 0.4,
-              fontSize: 9, color: accentColor, bold: true, fontFace: 'Helvetica Neue'
-            });
-          }
-
-          // HEADLINE
-          if (heading) {
-            slide.addText(heading, {
-              x: 0.8, y: 1.0, w: 11.5, h: statBoxes.length ? 1.6 : 2.2,
-              fontSize: statBoxes.length ? 28 : 36,
-              color: 'FFFFFF', bold: false, fontFace: 'Georgia',
-              valign: 'top', wrap: true
-            });
-          }
-
-          // ACCENT DIVIDER LINE (using a thin filled rect, no line transparency issue)
-          slide.addShape(pptx.ShapeType.rect, {
-            x: 0.8, y: heading ? (statBoxes.length ? 2.8 : 3.4) : 1.0,
-            w: 0.6, h: 0.04,
-            fill: { color: accentColor },
-            line: { color: accentColor, width: 0 }
-          });
-
-          const contentY = heading ? (statBoxes.length ? 3.0 : 3.6) : 1.2;
-
-          // BODY TEXT (when no bullets)
-          if (body && !points.length && !statBoxes.length) {
-            slide.addText(body, {
-              x: 0.8, y: contentY, w: 11.5, h: 2.0,
-              fontSize: 14, color: 'FFFFFF', fontFace: 'Helvetica Neue',
-              transparency: 10, wrap: true, valign: 'top'
-            });
-          }
-
-          // BULLET POINTS
-          if (points.length) {
-            const bulletObjs = points.map(pt => ({
-              text: '  → ' + pt,
-              options: { fontSize: 14, color: 'FFFFFF', fontFace: 'Helvetica Neue' }
-            }));
-            slide.addText(bulletObjs, {
-              x: 0.8, y: contentY, w: 11.5, h: 3.2,
-              valign: 'top', wrap: true
-            });
-          }
-
-          // STAT BOXES (3 across the bottom)
-          if (statBoxes.length) {
-            const count = statBoxes.length;
-            const boxW = 3.4, boxH = 1.6, startX = 0.8, topY = 5.2;
-            const gap = (11.5 - count * boxW) / (count + 1);
-
-            statBoxes.forEach((box, bi) => {
-              const num = box.querySelector('.slide-stat-num')?.textContent.trim() || '';
-              const lbl = box.querySelector('.slide-stat-label')?.textContent.trim() || '';
-              const bx = startX + bi * (boxW + gap) + gap;
-
-              // Box background — semi-opaque white via transparency
-              slide.addShape(pptx.ShapeType.rect, {
-                x: bx, y: topY, w: boxW, h: boxH,
-                fill: { color: 'FFFFFF', transparency: 85 },
-                line: { color: 'FFFFFF', transparency: 70, width: 0.5 }
-              });
-
-              // Number
-              if (num) slide.addText(num, {
-                x: bx, y: topY + 0.2, w: boxW, h: 0.8,
-                fontSize: 28, color: 'FFFFFF', fontFace: 'Georgia',
-                align: 'center', bold: false
-              });
-
-              // Label
-              if (lbl) slide.addText(lbl, {
-                x: bx, y: topY + 1.1, w: boxW, h: 0.4,
-                fontSize: 9, color: 'FFFFFF', fontFace: 'Helvetica Neue',
-                align: 'center', transparency: 30
-              });
-            });
-          }
-
-          // WATERMARK + SLIDE NUMBER
-          slide.addText('VentureOS', {
-            x: 9.5, y: 0.2, w: 3.0, h: 0.3,
-            fontSize: 9, color: 'FFFFFF', fontFace: 'Helvetica Neue',
-            transparency: 55, align: 'right'
-          });
-          slide.addText(`${i + 1} / ${slideEls.length}`, {
-            x: 9.5, y: 7.1, w: 3.0, h: 0.3,
-            fontSize: 9, color: 'FFFFFF', fontFace: 'Helvetica Neue',
-            transparency: 55, align: 'right'
-          });
+        const res = await fetch('/download_pptx', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slides: slidesPayload, idea: currentIdea || 'ventureos' })
         });
 
-        // Generate and download using base64 method (works in all browsers)
-        const b64 = await pptx.write({ outputType: 'base64' });
-        const byteChars = atob(b64);
-        const byteArr = new Uint8Array(byteChars.length);
-        for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
-        const blob = new Blob([byteArr], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
-        const fname = (currentIdea || 'ventureos').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) + '-pitch-deck.pptx';
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Server error ${res.status}`);
+        }
+
+        // Trigger browser download from the blob response
+        const blob = await res.blob();
+        const fname = (currentIdea || 'ventureos').toLowerCase().replace(/[^a-z0-9]+/g,'-').slice(0,40) + '-pitch-deck.pptx';
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = fname;
