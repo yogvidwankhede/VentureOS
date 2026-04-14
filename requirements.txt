@@ -1,5 +1,6 @@
 flask
 langchain
+python-pptx
 langchain-google-genai
 chromadb
 python-dotenv
