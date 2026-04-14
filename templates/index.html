@@ -1400,15 +1400,18 @@
       </div>
       <!-- THUMBNAIL STRIP -->
       <div class="slide-strip" id="slideStrip"></div>
+      <!-- THEME PICKER BAR -->
+      <div class="theme-picker-bar" id="themePickerBar" style="display:none;">
+        <span class="theme-picker-label">Theme</span>
+        <div id="themePills"></div>
+      </div>
       <!-- NAVIGATION -->
       <div class="slide-nav" id="slideNav" style="display:none;">
         <button class="slide-nav-btn" onclick="prevSlide()" id="prevSlideBtn">← Prev</button>
         <div class="slide-dots" id="slideDots"></div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <span class="slide-theme-badge" id="slideThemeBadge">Editorial Midnight</span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <span class="slide-counter" id="slideCounter">1 / 10</span>
-          <button class="slide-nav-btn" onclick="downloadPPTX()" title="Download an editable PowerPoint">⬇ Editable PPTX</button>
-          <button class="slide-nav-btn" onclick="regenerateSlides()" title="Generate a new deck style">↻ New Style</button>
+          <button class="slide-nav-btn" onclick="downloadPPTX()" title="Download an editable PowerPoint">⬇ PPTX</button>
           <button class="slide-nav-btn primary" onclick="nextSlide()" id="nextSlideBtn">Next →</button>
         </div>
       </div>
@@ -2304,307 +2307,370 @@
       }
     }
 
-    // ── Shared content zone renderers (used by all themes) ─────────────────
+    // ── Executive content zone renderers ───────────────────────────────────
+    // Designed for investor/stakeholder audiences: clear hierarchy, data-led,
+    // concise messaging, confident tone.
 
-    function _zoneBullets(points, accentColor) {
+    function _execBullets(points) {
       if (!points?.length) return '';
-      return `<ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px;">
+      return `<ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:11px;">
         ${points.slice(0,5).map((pt,i) => `
-          <li class="motion-item" style="--delay:${220+i*65}ms;display:flex;align-items:flex-start;gap:10px;font-size:13px;line-height:1.55;color:var(--deck-text);">
-            <span style="flex-shrink:0;margin-top:6px;width:5px;height:5px;border-radius:50%;background:var(--deck-accent);"></span>
-            <span>${escapeHtml(pt)}</span>
+          <li class="motion-item" style="--delay:${200+i*60}ms;display:flex;align-items:flex-start;gap:12px;">
+            <span style="flex-shrink:0;margin-top:5px;width:18px;height:18px;border-radius:4px;background:rgba(var(--deck-accent-rgb),.15);border:1px solid rgba(var(--deck-accent-rgb),.3);display:flex;align-items:center;justify-content:center;">
+              <svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3l2 2 4-4" stroke="var(--deck-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span style="font-size:13.5px;line-height:1.58;color:var(--deck-text);font-weight:400;">${escapeHtml(pt)}</span>
           </li>`).join('')}
       </ul>`;
     }
 
-    function _zoneSteps(points) {
+    function _execSteps(points) {
       if (!points?.length) return '';
-      return `<div style="display:flex;flex-direction:column;gap:10px;">
+      return `<div style="display:flex;flex-direction:column;gap:9px;">
         ${points.slice(0,5).map((pt,i) => `
-          <div class="motion-item" style="--delay:${220+i*65}ms;display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-radius:6px;background:rgba(var(--deck-accent-rgb),.07);border-left:3px solid var(--deck-accent);">
-            <span style="flex-shrink:0;font-size:11px;font-weight:700;color:var(--deck-accent);min-width:20px;margin-top:1px;">${String(i+1).padStart(2,'0')}</span>
-            <span style="font-size:13px;line-height:1.5;color:var(--deck-text);">${escapeHtml(pt)}</span>
+          <div class="motion-item" style="--delay:${200+i*60}ms;display:grid;grid-template-columns:32px 1fr;gap:12px;align-items:start;padding:12px 14px;border-radius:8px;background:rgba(var(--deck-accent-rgb),.06);border:1px solid rgba(var(--deck-accent-rgb),.14);">
+            <div style="width:32px;height:32px;border-radius:8px;background:rgba(var(--deck-accent-rgb),.18);border:1px solid rgba(var(--deck-accent-rgb),.28);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--deck-accent);">${i+1}</div>
+            <div style="font-size:13px;line-height:1.55;color:var(--deck-text);padding-top:7px;">${escapeHtml(pt)}</div>
           </div>`).join('')}
       </div>`;
     }
 
-    function _zoneStats(stats) {
+    function _execStats(stats) {
       if (!stats?.length) return '';
-      return `<div style="display:flex;gap:12px;flex-wrap:wrap;">
+      const count = Math.min(stats.length, 3);
+      return `<div style="display:grid;grid-template-columns:repeat(${count},1fr);gap:10px;">
         ${stats.slice(0,3).map((s,i) => `
-          <div class="motion-item" style="--delay:${300+i*70}ms;flex:1;min-width:100px;padding:16px 14px;border-radius:8px;background:rgba(var(--deck-accent-rgb),.09);border:1px solid rgba(var(--deck-accent-rgb),.22);">
-            <div style="font-size:24px;font-weight:700;color:var(--deck-accent);font-family:Georgia,serif;line-height:1;">${escapeHtml(s.value||'—')}</div>
-            <div style="font-size:10px;letter-spacing:.07em;text-transform:uppercase;opacity:.6;color:var(--deck-text);margin-top:5px;">${escapeHtml(s.label||'')}</div>
+          <div class="motion-item" style="--delay:${260+i*70}ms;padding:18px 14px;border-radius:10px;background:rgba(var(--deck-accent-rgb),.08);border:1px solid rgba(var(--deck-accent-rgb),.2);text-align:center;">
+            <div style="font-size:28px;font-weight:700;color:var(--deck-accent);font-family:Georgia,serif;line-height:1;letter-spacing:-0.02em;">${escapeHtml(s.value||'—')}</div>
+            <div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--deck-text);opacity:.55;margin-top:7px;line-height:1.4;">${escapeHtml(s.label||'')}</div>
           </div>`).join('')}
+      </div>`;
+    }
+
+    function _execInsightCard(text, delay=200) {
+      // A premium single-insight callout — for standalone key messages
+      return `<div class="motion-item" style="--delay:${delay}ms;padding:20px 22px;border-radius:10px;border-left:4px solid var(--deck-accent);background:rgba(var(--deck-accent-rgb),.07);border-right:1px solid rgba(var(--deck-accent-rgb),.12);border-top:1px solid rgba(var(--deck-accent-rgb),.08);border-bottom:1px solid rgba(var(--deck-accent-rgb),.08);">
+        <div style="font-size:14px;line-height:1.65;color:var(--deck-text);font-style:italic;opacity:.88;">${escapeHtml(text)}</div>
       </div>`;
     }
 
     function _pickContentZone(slide) {
       const type = slide.type || '';
       const layout = slide.layout || '';
-      const pts = slide.content || [];
-      const stats = slide.stats || [];
+      const pts = (slide.content || []).filter(Boolean);
+      const stats = (slide.stats || []).filter(s => s?.value || s?.label);
       const isStep = layout === 'roadmap' || ['how_it_works','business_model','process'].includes(type);
+      const isProof = ['proof','traction','impact'].includes(type);
       const hasStats = stats.length > 0;
 
-      if (isStep && pts.length) return _zoneSteps(pts);
-      if (hasStats && pts.length) return `<div style="display:flex;flex-direction:column;gap:14px;">${_zoneStats(stats)}${_zoneBullets(pts.slice(0,3))}</div>`;
-      if (hasStats) return _zoneStats(stats);
-      if (pts.length) return _zoneBullets(pts);
-      return `<p class="motion-item" style="--delay:220ms;font-size:13px;line-height:1.65;opacity:.6;color:var(--deck-text);margin:0;">${escapeHtml(slide.objective||slide.visual_suggestion||'')}</p>`;
+      // Proof/data slides: stats are the hero
+      if (isProof && hasStats && pts.length) return `<div style="display:flex;flex-direction:column;gap:16px;">${_execStats(stats)}${_execBullets(pts.slice(0,3))}</div>`;
+      if (isProof && hasStats) return _execStats(stats);
+      // Roadmap/how-it-works: numbered steps
+      if (isStep && pts.length) return _execSteps(pts);
+      // Stats + bullets
+      if (hasStats && pts.length) return `<div style="display:flex;flex-direction:column;gap:14px;">${_execStats(stats)}${_execBullets(pts.slice(0,3))}</div>`;
+      if (hasStats) return _execStats(stats);
+      if (pts.length) return _execBullets(pts);
+      // Fallback: insight card with objective
+      const fallback = slide.objective || slide.visual_suggestion || slide.subtitle || '';
+      return fallback ? _execInsightCard(fallback) : '';
     }
 
     function _slideTypeTag(type, index, total) {
-      return `<span style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--deck-accent);">${escapeHtml(slideTypeLabel(type))}</span><span style="font-size:10px;opacity:.35;color:var(--deck-text);margin-left:10px;">${index+1} / ${total}</span>`;
+      const LABELS = {
+        hook:'Opening', problem:'The Problem', stakes:'Market Opportunity',
+        solution:'Our Solution', how_it_works:'How It Works', impact:'Value & Impact',
+        proof:'Proof Points', business_model:'Business Model', vision:'Vision',
+        call_to_action:'The Ask', traction:'Traction', story:'Overview'
+      };
+      const label = LABELS[type] || slideTypeLabel(type);
+      return `<span style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--deck-accent);">${escapeHtml(label)}</span><span style="font-size:10px;opacity:.3;color:var(--deck-text);margin-left:10px;">${index+1} / ${total}</span>`;
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // EXECUTIVE SLIDE THEMES — 5 distinct shells, each cohesive & professional
+    // Every shell: Cover (slide 0) · Inner · CTA (last slide) — 3 sub-layouts
+    // Content zones adapt by slide.type; shell provides uniform brand/rhythm
+    // ══════════════════════════════════════════════════════════════════════════
+
     // ── THEME A: Classic Split (Editorial Midnight) ─────────────────────────
-    // Uniform shell: topbar tag row → left content col / right accent panel → footer bar
+    // Navy canvas. Left narrative / right content panel. Ruled topbar.
     function _themeClassic(slide, index, total) {
-      const isCover = index === 0 || slide.layout === 'cover';
-      const isCTA   = index === total - 1 || slide.layout === 'closing';
+      const isCover = index === 0;
+      const isCTA   = index === total - 1;
       const content = _pickContentZone(slide);
+      const titleFs = slide.title.length > 45 ? '28px' : slide.title.length > 30 ? '32px' : '38px';
 
       if (isCover) return `
-        <div class="slide-shell" style="display:flex;flex-direction:column;justify-content:center;padding:48px 56px;gap:0;">
-          <div class="motion-item" style="--delay:0ms;margin-bottom:16px;">${_slideTypeTag(slide.type,index,total)}</div>
-          <div class="motion-item" style="--delay:80ms;font-size:42px;font-weight:700;font-family:Georgia,serif;line-height:1.15;color:var(--deck-text);max-width:640px;margin-bottom:16px;">${escapeHtml(slide.title)}</div>
-          ${slide.subtitle?`<div class="motion-item" style="--delay:180ms;font-size:15px;opacity:.6;color:var(--deck-text);max-width:520px;line-height:1.6;margin-bottom:32px;">${escapeHtml(slide.subtitle)}</div>`:''}
-          <div class="motion-item" style="--delay:260ms;width:48px;height:3px;border-radius:2px;background:var(--deck-accent);margin-bottom:32px;"></div>
-          ${slide.stats?.length?_zoneStats(slide.stats):''}
-          <div class="motion-item" style="--delay:700ms;position:absolute;bottom:28px;right:36px;font-size:10px;opacity:.3;color:var(--deck-text);letter-spacing:.08em;">VentureOS</div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+        <div class="slide-shell" style="display:flex;flex-direction:column;justify-content:flex-end;padding:44px 52px 40px;gap:0;position:relative;">
+          <div class="motion-item" style="--delay:0ms;font-size:10px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:18px;opacity:.9;">${_slideTypeTag(slide.type,index,total)}</div>
+          <div class="motion-item" style="--delay:70ms;font-size:44px;font-weight:700;font-family:Georgia,serif;line-height:1.1;letter-spacing:-.02em;color:var(--deck-text);max-width:640px;margin-bottom:16px;">${escapeHtml(slide.title)}</div>
+          ${slide.subtitle?`<div class="motion-item" style="--delay:160ms;font-size:15px;opacity:.58;color:var(--deck-text);max-width:500px;line-height:1.65;font-weight:300;margin-bottom:28px;">${escapeHtml(slide.subtitle)}</div>`:'<div style="margin-bottom:20px;"></div>'}
+          <div class="motion-item" style="--delay:220ms;display:flex;align-items:center;gap:16px;">
+            <div style="height:2px;width:40px;background:var(--deck-accent);border-radius:1px;"></div>
+            <span style="font-size:11px;opacity:.4;color:var(--deck-text);letter-spacing:.06em;">Confidential · For Investor Use Only</span>
+          </div>
+          ${slide.stats?.length?`<div class="motion-item" style="--delay:300ms;margin-top:28px;">${_execStats(slide.stats)}</div>`:''}
+          <div style="position:absolute;top:36px;right:44px;display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+            <span class="motion-item" style="--delay:0ms;font-size:11px;font-weight:600;letter-spacing:.1em;color:var(--deck-accent);opacity:.7;">VentureOS</span>
+            <span style="font-size:9px;opacity:.25;color:var(--deck-text);">INVESTOR DECK ${new Date().getFullYear()}</span>
+          </div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
 
       if (isCTA) return `
-        <div class="slide-shell" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:48px 64px;gap:0;">
-          <div class="motion-item" style="--delay:0ms;margin-bottom:20px;">${_slideTypeTag(slide.type,index,total)}</div>
-          <div class="motion-item" style="--delay:80ms;font-size:38px;font-weight:700;font-family:Georgia,serif;line-height:1.2;color:var(--deck-text);max-width:620px;margin-bottom:18px;">${escapeHtml(slide.title)}</div>
-          ${slide.subtitle?`<div class="motion-item" style="--delay:180ms;font-size:14px;opacity:.6;color:var(--deck-text);max-width:480px;line-height:1.65;margin-bottom:28px;">${escapeHtml(slide.subtitle)}</div>`:''}
-          <div class="motion-item" style="--delay:260ms;width:48px;height:2px;background:var(--deck-accent);margin-bottom:28px;"></div>
-          ${slide.stats?.length?`<div style="display:flex;gap:40px;justify-content:center;">${slide.stats.slice(0,3).map((s,i)=>`<div class="motion-item" style="--delay:${340+i*70}ms;text-align:center;"><div style="font-size:28px;font-weight:700;color:var(--deck-accent);font-family:Georgia,serif;">${escapeHtml(s.value||'—')}</div><div style="font-size:10px;letter-spacing:.07em;text-transform:uppercase;opacity:.55;color:var(--deck-text);margin-top:4px;">${escapeHtml(s.label||'')}</div></div>`).join('')}</div>`:_zoneBullets(slide.content)}
-          <div class="motion-item" style="--delay:700ms;position:absolute;bottom:28px;right:36px;font-size:10px;opacity:.3;color:var(--deck-text);letter-spacing:.08em;">VentureOS</div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+        <div class="slide-shell" style="display:flex;flex-direction:column;justify-content:center;align-items:flex-start;padding:44px 52px;gap:0;position:relative;">
+          <div class="motion-item" style="--delay:0ms;margin-bottom:14px;">${_slideTypeTag(slide.type,index,total)}</div>
+          <div class="motion-item" style="--delay:70ms;font-size:40px;font-weight:700;font-family:Georgia,serif;line-height:1.15;color:var(--deck-text);max-width:600px;margin-bottom:16px;">${escapeHtml(slide.title)}</div>
+          ${slide.subtitle?`<div class="motion-item" style="--delay:160ms;font-size:14px;opacity:.6;color:var(--deck-text);max-width:460px;line-height:1.65;margin-bottom:28px;font-weight:300;">${escapeHtml(slide.subtitle)}</div>`:''}
+          ${slide.stats?.length?`<div class="motion-item" style="--delay:240ms;width:100%;max-width:580px;">${_execStats(slide.stats)}</div>`:slide.content?.length?`<div class="motion-item" style="--delay:240ms;max-width:540px;">${_execBullets(slide.content)}</div>`:''}
+          <div class="motion-item" style="--delay:700ms;position:absolute;bottom:32px;right:44px;font-size:10px;opacity:.28;color:var(--deck-text);letter-spacing:.08em;text-align:right;">VentureOS<br>${index+1} / ${total}</div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
 
       return `
-        <div class="slide-shell" style="display:flex;flex-direction:column;padding:28px 36px 24px;">
-          <div class="motion-item" style="--delay:0ms;display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid rgba(var(--deck-accent-rgb),.2);">
+        <div class="slide-shell" style="display:flex;flex-direction:column;padding:24px 32px 20px;gap:0;">
+          <div class="motion-item" style="--delay:0ms;display:flex;align-items:center;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid rgba(var(--deck-accent-rgb),.18);margin-bottom:18px;">
             ${_slideTypeTag(slide.type,index,total)}
-            <span style="font-size:10px;opacity:.25;color:var(--deck-text);letter-spacing:.06em;">VentureOS</span>
+            <span style="font-size:9px;opacity:.22;color:var(--deck-text);letter-spacing:.06em;">VentureOS</span>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:28px;flex:1;align-items:start;">
-            <div style="display:flex;flex-direction:column;gap:14px;">
-              <div class="motion-item" style="--delay:80ms;font-size:26px;font-weight:700;font-family:Georgia,serif;line-height:1.25;color:var(--deck-text);">${escapeHtml(slide.title)}</div>
-              ${slide.subtitle?`<div class="motion-item" style="--delay:160ms;font-size:12px;opacity:.55;color:var(--deck-text);line-height:1.55;">${escapeHtml(slide.subtitle)}</div>`:''}
+          <div style="display:grid;grid-template-columns:1.1fr 0.9fr;gap:28px;flex:1;align-items:start;min-height:0;">
+            <div style="display:flex;flex-direction:column;gap:12px;min-height:0;">
+              <div class="motion-item" style="--delay:60ms;font-size:${titleFs};font-weight:700;font-family:Georgia,serif;line-height:1.2;letter-spacing:-.01em;color:var(--deck-text);">${escapeHtml(slide.title)}</div>
+              ${slide.subtitle?`<div class="motion-item" style="--delay:130ms;font-size:12.5px;opacity:.55;color:var(--deck-text);line-height:1.6;font-weight:300;max-width:38ch;">${escapeHtml(slide.subtitle)}</div>`:''}
+              ${slide.objective?`<div class="motion-item" style="--delay:160ms;font-size:11.5px;opacity:.4;color:var(--deck-text);line-height:1.55;font-style:italic;max-width:36ch;padding-top:4px;">${escapeHtml(slide.objective)}</div>`:''}
             </div>
-            <div style="display:flex;flex-direction:column;gap:12px;">${content}</div>
+            <div style="min-height:0;">${content}</div>
           </div>
-          ${slide.stats?.length && (slide.content?.length||slide.layout==='roadmap') ? `<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(var(--deck-accent-rgb),.15);">${_zoneStats(slide.stats)}</div>` : ''}
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+          <div class="motion-item" style="--delay:700ms;display:flex;justify-content:flex-end;align-items:center;padding-top:10px;border-top:1px solid rgba(var(--deck-accent-rgb),.1);margin-top:14px;">
+            <span style="font-size:9px;opacity:.25;color:var(--deck-text);">${index+1} / ${total}</span>
+          </div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
     }
 
     // ── THEME B: Consulting (Boardroom Ivory) ───────────────────────────────
-    // Uniform shell: thick top rule with chapter label → full-width title → content grid → stat footer
+    // Light canvas. Thick top rule. Full-width title header. Numbered card grid.
     function _themeConsulting(slide, index, total) {
-      const isFirstOrLast = index === 0 || index === total - 1;
-      const pts = slide.content || [];
-      const stats = slide.stats || [];
+      const isCover = index === 0;
+      const isCTA   = index === total - 1;
+      const pts = (slide.content || []).filter(Boolean);
+      const stats = (slide.stats || []).filter(s => s?.value || s?.label);
+      const titleFs = slide.title.length > 48 ? '26px' : slide.title.length > 32 ? '30px' : '36px';
 
-      if (isFirstOrLast) return `
-        <div class="slide-shell" style="display:flex;flex-direction:column;padding:0;">
-          <div style="height:6px;background:var(--deck-accent);"></div>
+      if (isCover || isCTA) return `
+        <div class="slide-shell" style="display:flex;flex-direction:column;padding:0;position:relative;">
+          <div style="height:6px;background:linear-gradient(90deg,var(--deck-accent),rgba(var(--deck-accent-rgb),.4));"></div>
           <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:40px 56px;">
-            <div class="motion-item" style="--delay:0ms;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:20px;">${escapeHtml(slideTypeLabel(slide.type))} · ${index+1} of ${total}</div>
-            <div class="motion-item" style="--delay:80ms;font-size:44px;font-weight:700;font-family:Georgia,serif;line-height:1.15;color:var(--deck-text);max-width:680px;margin-bottom:20px;">${escapeHtml(slide.title)}</div>
-            ${slide.subtitle?`<div class="motion-item" style="--delay:180ms;font-size:15px;opacity:.55;color:var(--deck-text);max-width:520px;line-height:1.6;">${escapeHtml(slide.subtitle)}</div>`:''}
+            <div class="motion-item" style="--delay:0ms;font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:22px;opacity:.85;">${isCover?'Investor Presentation':'Strategic Ask'} · ${new Date().getFullYear()}</div>
+            <div class="motion-item" style="--delay:70ms;font-size:46px;font-weight:700;font-family:Georgia,serif;line-height:1.1;letter-spacing:-.02em;color:var(--deck-text);max-width:680px;margin-bottom:18px;">${escapeHtml(slide.title)}</div>
+            ${slide.subtitle?`<div class="motion-item" style="--delay:170ms;font-size:15px;opacity:.52;color:var(--deck-text);max-width:520px;line-height:1.65;font-weight:300;">${escapeHtml(slide.subtitle)}</div>`:''}
+            ${isCTA&&stats.length?`<div class="motion-item" style="--delay:260ms;margin-top:28px;">${_execStats(stats)}</div>`:''}
           </div>
-          <div style="padding:16px 56px;border-top:1px solid rgba(var(--deck-accent-rgb),.25);display:flex;justify-content:space-between;align-items:center;">
-            <span style="font-size:10px;opacity:.35;color:var(--deck-text);">VentureOS · Investor Presentation</span>
-            <span style="font-size:10px;opacity:.35;color:var(--deck-text);">${index+1} / ${total}</span>
+          <div style="padding:14px 56px;border-top:1px solid rgba(var(--deck-accent-rgb),.2);display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:10px;opacity:.32;color:var(--deck-text);">VentureOS · Confidential</span>
+            <span style="font-size:10px;opacity:.32;color:var(--deck-text);">${index+1} / ${total}</span>
           </div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
 
-      const cards = pts.slice(0,4).map((pt,i) => `
-        <div class="motion-item" style="--delay:${200+i*75}ms;padding:16px 18px;border-top:2px solid ${i===0?'var(--deck-accent)':'rgba(var(--deck-accent-rgb),.25)'};">
-          <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--deck-accent);margin-bottom:7px;">0${i+1}</div>
-          <div style="font-size:13px;line-height:1.55;color:var(--deck-text);">${escapeHtml(pt)}</div>
-        </div>`).join('');
+      const cardData = pts.slice(0,4);
+      const cards = cardData.length ? cardData.map((pt,i) => `
+        <div class="motion-item" style="--delay:${180+i*65}ms;padding:16px 18px;border-radius:8px;background:rgba(var(--deck-accent-rgb),.06);border:1px solid rgba(var(--deck-accent-rgb),.16);">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--deck-accent);margin-bottom:8px;text-transform:uppercase;">0${i+1}</div>
+          <div style="font-size:13px;line-height:1.58;color:var(--deck-text);">${escapeHtml(pt)}</div>
+        </div>`).join('') : `<div class="motion-item" style="--delay:180ms;padding:16px 18px;border-radius:8px;background:rgba(var(--deck-accent-rgb),.06);font-size:13px;opacity:.6;color:var(--deck-text);">${escapeHtml(slide.objective||slide.visual_suggestion||'')}</div>`;
 
       return `
         <div class="slide-shell" style="display:flex;flex-direction:column;padding:0;">
           <div style="height:4px;background:var(--deck-accent);"></div>
-          <div class="motion-item" style="--delay:0ms;padding:20px 36px 16px;display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid rgba(var(--deck-accent-rgb),.2);">
-            <div>
-              <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:6px;">${escapeHtml(slideTypeLabel(slide.type))}</div>
-              <div style="font-size:24px;font-weight:700;color:var(--deck-text);font-family:Georgia,serif;line-height:1.2;max-width:580px;">${escapeHtml(slide.title)}</div>
+          <div class="motion-item" style="--delay:0ms;padding:18px 32px 14px;display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1px solid rgba(var(--deck-accent-rgb),.18);">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:6px;opacity:.8;">${_slideTypeTag(slide.type,index,total)}</div>
+              <div style="font-size:${titleFs};font-weight:700;color:var(--deck-text);font-family:Georgia,serif;line-height:1.2;max-width:580px;">${escapeHtml(slide.title)}</div>
             </div>
-            <div style="font-size:10px;opacity:.3;color:var(--deck-text);">VentureOS</div>
+            <span style="font-size:9px;opacity:.22;color:var(--deck-text);flex-shrink:0;margin-left:16px;">VentureOS</span>
           </div>
-          ${slide.subtitle?`<div class="motion-item" style="--delay:70ms;padding:10px 36px 0;font-size:12px;opacity:.55;color:var(--deck-text);">${escapeHtml(slide.subtitle)}</div>`:''}
-          <div style="flex:1;display:grid;grid-template-columns:${pts.length>2?'1fr 1fr':'1fr'};gap:0;padding:16px 36px;">
-            ${cards||`<div class="motion-item" style="--delay:200ms;padding:16px 18px;border-top:2px solid var(--deck-accent);font-size:13px;opacity:.6;color:var(--deck-text);">${escapeHtml(slide.objective||slide.visual_suggestion||'')}</div>`}
+          ${slide.subtitle?`<div class="motion-item" style="--delay:60ms;padding:8px 32px 0;font-size:12.5px;opacity:.52;color:var(--deck-text);font-weight:300;line-height:1.55;">${escapeHtml(slide.subtitle)}</div>`:''}
+          <div style="flex:1;display:grid;grid-template-columns:${cardData.length>2?'1fr 1fr':'1fr'};gap:10px;padding:14px 32px;align-content:start;">
+            ${cards}
           </div>
-          ${stats.length?`<div class="motion-item" style="--delay:480ms;display:flex;border-top:1px solid rgba(var(--deck-accent-rgb),.25);padding:0 36px;">
-            ${stats.slice(0,3).map((s,i)=>`<div style="flex:1;padding:12px 16px 14px;${i>0?'border-left:1px solid rgba(var(--deck-accent-rgb),.2);':''}">
-              <div style="font-size:19px;font-weight:700;color:var(--deck-accent);font-family:Georgia,serif;">${escapeHtml(s.value||'—')}</div>
-              <div style="font-size:10px;letter-spacing:.07em;text-transform:uppercase;opacity:.5;margin-top:3px;color:var(--deck-text);">${escapeHtml(s.label||'')}</div>
+          ${stats.length?`<div class="motion-item" style="--delay:440ms;display:flex;border-top:1px solid rgba(var(--deck-accent-rgb),.18);padding:0 32px;">
+            ${stats.slice(0,3).map((s,i)=>`<div style="flex:1;padding:12px 14px;${i>0?'border-left:1px solid rgba(var(--deck-accent-rgb),.15);':''}">
+              <div style="font-size:20px;font-weight:700;color:var(--deck-accent);font-family:Georgia,serif;">${escapeHtml(s.value||'—')}</div>
+              <div style="font-size:9.5px;letter-spacing:.07em;text-transform:uppercase;opacity:.5;margin-top:3px;color:var(--deck-text);">${escapeHtml(s.label||'')}</div>
             </div>`).join('')}
-          </div>`:`<div style="padding:10px 36px 14px;border-top:1px solid rgba(var(--deck-accent-rgb),.12);display:flex;justify-content:space-between;"><span style="font-size:10px;opacity:.3;color:var(--deck-text);">VentureOS · Investor Deck</span><span style="font-size:10px;opacity:.3;color:var(--deck-text);">${index+1} / ${total}</span></div>`}
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+          </div>`:
+          `<div style="padding:10px 32px 12px;border-top:1px solid rgba(var(--deck-accent-rgb),.1);display:flex;justify-content:flex-end;">
+            <span style="font-size:9px;opacity:.25;color:var(--deck-text);">${index+1} / ${total}</span>
+          </div>`}
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
     }
 
     // ── THEME C: Hero (Kinetic Ember) ───────────────────────────────────────
-    // Uniform shell: 5px accent left bar, right-side accent block for stats/visual
+    // Dark canvas. Bold 5px accent bar. Two-column: story left, panel right.
     function _themeHero(slide, index, total) {
-      const pts = slide.content || [];
-      const stats = slide.stats || [];
-      const isFirstOrLast = index === 0 || index === total - 1;
-      const titleSize = slide.title.length > 40 ? '28' : slide.title.length > 25 ? '32' : '38';
+      const isCover = index === 0;
+      const isCTA   = index === total - 1;
+      const pts = (slide.content || []).filter(Boolean);
+      const stats = (slide.stats || []).filter(s => s?.value || s?.label);
+      const titleFs = slide.title.length > 40 ? '28px' : slide.title.length > 26 ? '33px' : '39px';
 
-      const rightBlock = stats.length
-        ? `<div style="display:flex;flex-direction:column;gap:14px;justify-content:center;">
-            ${stats.slice(0,3).map((s,i)=>`
-              <div class="motion-item" style="--delay:${280+i*80}ms;padding:18px 20px;border-radius:8px;background:rgba(var(--deck-accent-rgb),.1);border:1px solid rgba(var(--deck-accent-rgb),.2);">
-                <div style="font-size:28px;font-weight:700;color:var(--deck-accent);font-family:Georgia,serif;">${escapeHtml(s.value||'—')}</div>
-                <div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;opacity:.55;color:var(--deck-text);margin-top:5px;">${escapeHtml(s.label||'')}</div>
-              </div>`).join('')}
-          </div>`
-        : `<div class="motion-item" style="--delay:280ms;display:flex;flex-direction:column;justify-content:center;height:100%;padding:24px;border-radius:8px;background:rgba(var(--deck-accent-rgb),.06);border:1px solid rgba(var(--deck-accent-rgb),.15);">
-            <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:12px;">Visual Direction</div>
-            <div style="font-size:13px;line-height:1.6;opacity:.7;color:var(--deck-text);">${escapeHtml(slide.visual_suggestion||slide.design_notes||'Lead with one bold proof visual.')}</div>
-          </div>`;
-
-      if (isFirstOrLast) return `
+      if (isCover || isCTA) return `
         <div class="slide-shell" style="display:flex;flex-direction:row;padding:0;overflow:hidden;">
           <div style="width:6px;background:var(--deck-accent);flex-shrink:0;"></div>
-          <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:48px 52px;">
-            <div class="motion-item" style="--delay:0ms;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:20px;">${escapeHtml(slideTypeLabel(slide.type))} · ${index+1} / ${total}</div>
-            <div class="motion-item" style="--delay:80ms;font-size:46px;font-weight:800;font-family:Georgia,serif;line-height:1.12;color:var(--deck-text);max-width:660px;margin-bottom:18px;">${escapeHtml(slide.title)}</div>
-            ${slide.subtitle?`<div class="motion-item" style="--delay:180ms;font-size:15px;opacity:.6;color:var(--deck-text);max-width:520px;line-height:1.6;">${escapeHtml(slide.subtitle)}</div>`:''}
-            <div class="motion-item" style="--delay:700ms;position:absolute;bottom:26px;right:36px;font-size:10px;opacity:.28;color:var(--deck-text);">VentureOS</div>
+          <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:46px 50px;position:relative;">
+            <div class="motion-item" style="--delay:0ms;font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:20px;opacity:.85;">${isCover?'Investor Deck':'The Ask'} · ${new Date().getFullYear()}</div>
+            <div class="motion-item" style="--delay:70ms;font-size:46px;font-weight:800;font-family:Georgia,serif;line-height:1.1;letter-spacing:-.02em;color:var(--deck-text);max-width:660px;margin-bottom:16px;">${escapeHtml(slide.title)}</div>
+            ${slide.subtitle?`<div class="motion-item" style="--delay:170ms;font-size:15px;opacity:.58;color:var(--deck-text);max-width:500px;line-height:1.65;font-weight:300;margin-bottom:${isCTA&&stats.length?'28px':'0px'};">${escapeHtml(slide.subtitle)}</div>`:''}
+            ${isCTA&&stats.length?`<div class="motion-item" style="--delay:260ms;">${_execStats(stats)}</div>`:''}
+            <div class="motion-item" style="--delay:700ms;position:absolute;bottom:28px;right:40px;font-size:9px;opacity:.25;color:var(--deck-text);text-align:right;">VentureOS<br>${index+1} / ${total}</div>
           </div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
+
+      const rightPanel = stats.length
+        ? `<div style="display:flex;flex-direction:column;gap:10px;">
+            ${stats.slice(0,3).map((s,i)=>`
+              <div class="motion-item" style="--delay:${260+i*75}ms;padding:16px 18px;border-radius:10px;background:rgba(var(--deck-accent-rgb),.09);border:1px solid rgba(var(--deck-accent-rgb),.2);">
+                <div style="font-size:26px;font-weight:700;color:var(--deck-accent);font-family:Georgia,serif;line-height:1;">${escapeHtml(s.value||'—')}</div>
+                <div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;opacity:.5;color:var(--deck-text);margin-top:5px;">${escapeHtml(s.label||'')}</div>
+              </div>`).join('')}
+          </div>`
+        : slide.visual_suggestion
+          ? `<div class="motion-item" style="--delay:260ms;height:100%;padding:20px;border-radius:10px;background:rgba(var(--deck-accent-rgb),.06);border:1px solid rgba(var(--deck-accent-rgb),.14);display:flex;flex-direction:column;gap:12px;justify-content:center;">
+              <div style="font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--deck-accent);opacity:.7;">Visual Direction</div>
+              <div style="font-size:13px;line-height:1.6;opacity:.7;color:var(--deck-text);">${escapeHtml(slide.visual_suggestion)}</div>
+            </div>`
+          : '';
 
       return `
         <div class="slide-shell" style="display:flex;flex-direction:row;padding:0;overflow:hidden;">
           <div style="width:5px;background:var(--deck-accent);flex-shrink:0;"></div>
-          <div style="flex:1;display:flex;flex-direction:column;padding:26px 32px 22px;">
-            <div class="motion-item" style="--delay:0ms;display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
-              <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--deck-accent);">${escapeHtml(slideTypeLabel(slide.type))}</div>
-              <div style="font-size:10px;opacity:.3;color:var(--deck-text);">${index+1} / ${total} · VentureOS</div>
+          <div style="flex:1;display:flex;flex-direction:column;padding:22px 28px 18px;">
+            <div class="motion-item" style="--delay:0ms;display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid rgba(var(--deck-accent-rgb),.15);">
+              ${_slideTypeTag(slide.type,index,total)}
+              <span style="font-size:9px;opacity:.22;color:var(--deck-text);">VentureOS</span>
             </div>
-            <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start;">
-              <div style="display:flex;flex-direction:column;gap:14px;">
-                <div class="motion-item" style="--delay:80ms;font-size:${titleSize}px;font-weight:800;font-family:Georgia,serif;line-height:1.18;color:var(--deck-text);">${escapeHtml(slide.title)}</div>
-                ${slide.subtitle?`<div class="motion-item" style="--delay:160ms;font-size:12px;opacity:.6;color:var(--deck-text);line-height:1.55;">${escapeHtml(slide.subtitle)}</div>`:''}
-                <div style="margin-top:4px;">${pts.length?_zoneBullets(pts):''}</div>
+            <div style="flex:1;display:grid;grid-template-columns:1.05fr 0.95fr;gap:22px;align-items:start;min-height:0;">
+              <div style="display:flex;flex-direction:column;gap:12px;min-height:0;">
+                <div class="motion-item" style="--delay:60ms;font-size:${titleFs};font-weight:800;font-family:Georgia,serif;line-height:1.18;letter-spacing:-.01em;color:var(--deck-text);">${escapeHtml(slide.title)}</div>
+                ${slide.subtitle?`<div class="motion-item" style="--delay:130ms;font-size:12.5px;opacity:.55;color:var(--deck-text);line-height:1.58;font-weight:300;">${escapeHtml(slide.subtitle)}</div>`:''}
+                <div style="margin-top:4px;">${_pickContentZone({...slide,stats:[]})}</div>
               </div>
-              <div>${rightBlock}</div>
+              <div style="height:100%;">${rightPanel}</div>
+            </div>
+            <div class="motion-item" style="--delay:700ms;padding-top:10px;border-top:1px solid rgba(var(--deck-accent-rgb),.1);margin-top:10px;display:flex;justify-content:flex-end;">
+              <span style="font-size:9px;opacity:.22;color:var(--deck-text);">${index+1} / ${total}</span>
             </div>
           </div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
     }
 
     // ── THEME D: Dashboard (Atlas Sapphire) ─────────────────────────────────
-    // Uniform shell: left sidebar (slide index + type label) + right content area
+    // Deep navy. Left sidebar with index + section. Right main content area.
     function _themeDashboard(slide, index, total) {
-      const pts = slide.content || [];
-      const stats = slide.stats || [];
-      const isFirstOrLast = index === 0 || index === total - 1;
+      const isCover = index === 0;
+      const isCTA   = index === total - 1;
+      const pts = (slide.content || []).filter(Boolean);
+      const stats = (slide.stats || []).filter(s => s?.value || s?.label);
+      const titleFs = slide.title.length > 42 ? '26px' : slide.title.length > 28 ? '30px' : '34px';
 
-      if (isFirstOrLast) return `
+      if (isCover || isCTA) return `
         <div class="slide-shell" style="display:flex;flex-direction:row;padding:0;gap:0;">
-          <div style="width:220px;flex-shrink:0;background:rgba(var(--deck-accent-rgb),.1);border-right:1px solid rgba(var(--deck-accent-rgb),.2);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:36px 24px;gap:16px;">
-            <div class="motion-item" style="--delay:0ms;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--deck-accent);text-align:center;">${escapeHtml(slideTypeLabel(slide.type))}</div>
-            <div class="motion-item" style="--delay:60ms;font-size:56px;font-weight:800;color:var(--deck-text);font-family:Georgia,serif;line-height:1;text-align:center;">${String(index+1).padStart(2,'0')}</div>
-            <div style="width:32px;height:2px;background:var(--deck-accent);"></div>
-            <div style="font-size:10px;opacity:.3;color:var(--deck-text);">of ${total}</div>
+          <div style="width:220px;flex-shrink:0;background:rgba(var(--deck-accent-rgb),.1);border-right:1px solid rgba(var(--deck-accent-rgb),.2);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 20px;gap:14px;text-align:center;">
+            <div class="motion-item" style="--delay:0ms;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--deck-accent);opacity:.8;">${isCover?'Investor Deck':'Strategic Ask'}</div>
+            <div class="motion-item" style="--delay:60ms;font-size:52px;font-weight:800;color:var(--deck-text);font-family:Georgia,serif;line-height:1;">${String(index+1).padStart(2,'0')}</div>
+            <div style="width:28px;height:2px;background:var(--deck-accent);border-radius:1px;"></div>
+            <div style="font-size:9.5px;opacity:.28;color:var(--deck-text);">of ${total} slides</div>
+            <div style="margin-top:auto;font-size:10px;font-weight:600;letter-spacing:.08em;color:var(--deck-accent);opacity:.5;">VentureOS</div>
           </div>
-          <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:44px 48px;">
-            <div class="motion-item" style="--delay:80ms;font-size:40px;font-weight:700;font-family:Georgia,serif;line-height:1.18;color:var(--deck-text);max-width:600px;margin-bottom:16px;">${escapeHtml(slide.title)}</div>
-            ${slide.subtitle?`<div class="motion-item" style="--delay:180ms;font-size:14px;opacity:.6;color:var(--deck-text);max-width:500px;line-height:1.6;">${escapeHtml(slide.subtitle)}</div>`:''}
+          <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:40px 44px;gap:16px;">
+            <div class="motion-item" style="--delay:80ms;font-size:42px;font-weight:700;font-family:Georgia,serif;line-height:1.15;letter-spacing:-.02em;color:var(--deck-text);max-width:580px;">${escapeHtml(slide.title)}</div>
+            ${slide.subtitle?`<div class="motion-item" style="--delay:170ms;font-size:14px;opacity:.56;color:var(--deck-text);max-width:460px;line-height:1.65;font-weight:300;">${escapeHtml(slide.subtitle)}</div>`:''}
+            ${isCTA&&stats.length?`<div class="motion-item" style="--delay:260ms;margin-top:8px;">${_execStats(stats)}</div>`:''}
           </div>
-          <div class="motion-item" style="--delay:700ms;position:absolute;bottom:20px;right:28px;font-size:10px;opacity:.25;color:var(--deck-text);letter-spacing:.06em;">VentureOS</div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
 
-      const contentArea = stats.length && pts.length
-        ? `<div style="display:flex;flex-direction:column;gap:14px;">${_zoneStats(stats)}${_zoneBullets(pts.slice(0,3))}</div>`
-        : stats.length ? _zoneStats(stats)
-        : pts.length ? (slide.layout==='roadmap'?_zoneSteps(pts):_zoneBullets(pts))
-        : `<p style="font-size:13px;opacity:.55;color:var(--deck-text);line-height:1.65;">${escapeHtml(slide.objective||slide.visual_suggestion||'')}</p>`;
-
+      const zone = _pickContentZone(slide);
       return `
         <div class="slide-shell" style="display:flex;flex-direction:row;padding:0;gap:0;">
-          <div style="width:160px;flex-shrink:0;background:rgba(var(--deck-accent-rgb),.08);border-right:1px solid rgba(var(--deck-accent-rgb),.18);padding:24px 18px;display:flex;flex-direction:column;gap:0;">
-            <div class="motion-item" style="--delay:0ms;margin-bottom:auto;">
-              <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:8px;">Section</div>
-              <div style="font-size:12px;color:var(--deck-text);opacity:.8;line-height:1.4;">${escapeHtml(slideTypeLabel(slide.type))}</div>
+          <div style="width:150px;flex-shrink:0;background:rgba(var(--deck-accent-rgb),.08);border-right:1px solid rgba(var(--deck-accent-rgb),.16);padding:22px 16px;display:flex;flex-direction:column;gap:0;">
+            <div class="motion-item" style="--delay:0ms;flex:1;">
+              <div style="font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:8px;opacity:.8;">Section</div>
+              <div style="font-size:11.5px;color:var(--deck-text);opacity:.8;line-height:1.45;">${escapeHtml(slideTypeLabel(slide.type).replace(/_/g,' '))}</div>
             </div>
-            <div class="motion-item" style="--delay:40ms;margin-top:auto;">
-              <div style="font-size:36px;font-weight:800;color:var(--deck-text);font-family:Georgia,serif;line-height:1;">${String(index+1).padStart(2,'0')}</div>
-              <div style="font-size:9px;opacity:.3;color:var(--deck-text);margin-top:3px;">of ${total}</div>
+            <div class="motion-item" style="--delay:40ms;">
+              <div style="font-size:33px;font-weight:800;color:var(--deck-text);font-family:Georgia,serif;line-height:1;">${String(index+1).padStart(2,'0')}</div>
+              <div style="font-size:9px;opacity:.28;color:var(--deck-text);margin-top:3px;">of ${total}</div>
             </div>
-            <div style="font-size:9px;opacity:.2;color:var(--deck-text);margin-top:16px;letter-spacing:.06em;">VentureOS</div>
+            <div style="font-size:8.5px;opacity:.2;color:var(--deck-text);margin-top:14px;letter-spacing:.06em;">VentureOS</div>
           </div>
-          <div style="flex:1;padding:24px 28px 20px;display:flex;flex-direction:column;gap:14px;overflow:hidden;">
-            <div class="motion-item" style="--delay:60ms;padding-bottom:12px;border-bottom:1px solid rgba(var(--deck-accent-rgb),.18);">
-              <div style="font-size:22px;font-weight:700;color:var(--deck-text);font-family:Georgia,serif;line-height:1.25;">${escapeHtml(slide.title)}</div>
-              ${slide.subtitle?`<div style="font-size:12px;opacity:.55;color:var(--deck-text);margin-top:6px;line-height:1.5;">${escapeHtml(slide.subtitle)}</div>`:''}
+          <div style="flex:1;padding:20px 24px 16px;display:flex;flex-direction:column;gap:12px;overflow:hidden;min-width:0;">
+            <div class="motion-item" style="--delay:60ms;padding-bottom:10px;border-bottom:1px solid rgba(var(--deck-accent-rgb),.16);">
+              <div style="font-size:${titleFs};font-weight:700;color:var(--deck-text);font-family:Georgia,serif;line-height:1.22;">${escapeHtml(slide.title)}</div>
+              ${slide.subtitle?`<div style="font-size:12px;opacity:.52;color:var(--deck-text);margin-top:5px;line-height:1.55;font-weight:300;">${escapeHtml(slide.subtitle)}</div>`:''}
             </div>
-            <div style="flex:1;">${contentArea}</div>
+            <div style="flex:1;overflow:hidden;">${zone}</div>
+            <div class="motion-item" style="--delay:700ms;display:flex;justify-content:flex-end;">
+              <span style="font-size:9px;opacity:.2;color:var(--deck-text);">${index+1} / ${total}</span>
+            </div>
           </div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
     }
 
     // ── THEME E: Editorial (Monochrome Luxe) ────────────────────────────────
-    // Uniform shell: centered/composed — top rule, big centered title, body below
+    // Black canvas. Centered luxury cover. Inner: full-width title + body grid.
     function _themeEditorial(slide, index, total) {
-      const pts = slide.content || [];
-      const stats = slide.stats || [];
-      const isFirstOrLast = index === 0 || index === total - 1;
-      const titleSize = slide.title.length > 50 ? '28' : slide.title.length > 32 ? '34' : '42';
+      const isCover = index === 0;
+      const isCTA   = index === total - 1;
+      const pts = (slide.content || []).filter(Boolean);
+      const stats = (slide.stats || []).filter(s => s?.value || s?.label);
+      const titleFs = slide.title.length > 50 ? '26px' : slide.title.length > 34 ? '32px' : '40px';
 
-      if (isFirstOrLast) return `
-        <div class="slide-shell" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:48px 72px;gap:0;">
-          <div class="motion-item" style="--delay:0ms;font-size:10px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:28px;">${escapeHtml(slideTypeLabel(slide.type))} · ${index+1} / ${total}</div>
-          <div class="motion-item" style="--delay:80ms;font-size:${titleSize}px;font-weight:700;font-family:Georgia,serif;line-height:1.2;color:var(--deck-text);max-width:680px;margin-bottom:20px;">${escapeHtml(slide.title)}</div>
-          <div class="motion-item" style="--delay:200ms;width:48px;height:1px;background:var(--deck-accent);margin-bottom:20px;"></div>
-          ${slide.subtitle?`<div class="motion-item" style="--delay:260ms;font-size:14px;opacity:.55;color:var(--deck-text);max-width:500px;line-height:1.65;">${escapeHtml(slide.subtitle)}</div>`:''}
-          <div class="motion-item" style="--delay:700ms;position:absolute;bottom:26px;font-size:9px;letter-spacing:.12em;opacity:.22;color:var(--deck-text);text-transform:uppercase;">VentureOS</div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+      if (isCover || isCTA) return `
+        <div class="slide-shell" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:44px 68px;gap:0;position:relative;">
+          <div class="motion-item" style="--delay:0ms;font-size:10px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:var(--deck-accent);margin-bottom:24px;opacity:.8;">${isCover?'Confidential · Investor Presentation':'The Strategic Ask'}</div>
+          <div class="motion-item" style="--delay:70ms;font-size:${titleFs};font-weight:700;font-family:Georgia,serif;line-height:1.18;letter-spacing:-.02em;color:var(--deck-text);max-width:680px;margin-bottom:18px;">${escapeHtml(slide.title)}</div>
+          <div class="motion-item" style="--delay:190ms;width:44px;height:1px;background:var(--deck-accent);margin-bottom:18px;"></div>
+          ${slide.subtitle?`<div class="motion-item" style="--delay:250ms;font-size:14.5px;opacity:.52;color:var(--deck-text);max-width:480px;line-height:1.68;font-weight:300;">${escapeHtml(slide.subtitle)}</div>`:''}
+          ${isCTA&&stats.length?`<div class="motion-item" style="--delay:330ms;margin-top:24px;width:100%;max-width:560px;">${_execStats(stats)}</div>`:''}
+          <div class="motion-item" style="--delay:700ms;position:absolute;bottom:24px;font-size:9px;letter-spacing:.14em;opacity:.2;color:var(--deck-text);text-transform:uppercase;">VentureOS · ${index+1} / ${total}</div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
 
-      // Inner slides: full-width title block, then 2-col or single-col body
       const hasGrid = pts.length >= 3;
-      const body = hasGrid
-        ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+      const bodyZone = hasGrid
+        ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
             ${pts.slice(0,4).map((pt,i)=>`
-              <div class="motion-item" style="--delay:${240+i*70}ms;padding:16px 18px;border-top:1px solid rgba(var(--deck-accent-rgb),.35);">
-                <div style="font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--deck-accent);margin-bottom:8px;">0${i+1}</div>
+              <div class="motion-item" style="--delay:${220+i*65}ms;padding:15px 17px;border-radius:8px;border:1px solid rgba(var(--deck-accent-rgb),.2);background:rgba(var(--deck-accent-rgb),.05);">
+                <div style="font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--deck-accent);margin-bottom:7px;text-transform:uppercase;">0${i+1}</div>
                 <div style="font-size:13px;line-height:1.58;color:var(--deck-text);">${escapeHtml(pt)}</div>
               </div>`).join('')}
           </div>`
-        : `<div style="display:flex;flex-direction:column;gap:10px;">${_zoneBullets(pts)}</div>`;
+        : _pickContentZone(slide);
 
       return `
-        <div class="slide-shell" style="display:flex;flex-direction:column;padding:30px 48px 24px;">
-          <div class="motion-item" style="--delay:0ms;display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
-            <span style="font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--deck-accent);">${escapeHtml(slideTypeLabel(slide.type))}</span>
-            <span style="font-size:10px;opacity:.28;color:var(--deck-text);">${index+1} / ${total} · VentureOS</span>
+        <div class="slide-shell" style="display:flex;flex-direction:column;padding:24px 40px 18px;">
+          <div class="motion-item" style="--delay:0ms;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            ${_slideTypeTag(slide.type,index,total)}
+            <span style="font-size:9px;opacity:.2;color:var(--deck-text);letter-spacing:.06em;">VentureOS</span>
           </div>
-          <div class="motion-item" style="--delay:80ms;font-size:28px;font-weight:700;font-family:Georgia,serif;line-height:1.25;color:var(--deck-text);margin-bottom:8px;max-width:640px;">${escapeHtml(slide.title)}</div>
-          ${slide.subtitle?`<div class="motion-item" style="--delay:160ms;font-size:12.5px;opacity:.55;color:var(--deck-text);margin-bottom:18px;line-height:1.55;">${escapeHtml(slide.subtitle)}</div>`:`<div style="margin-bottom:16px;"></div>`}
-          <div class="motion-item" style="--delay:180ms;width:100%;height:1px;background:rgba(var(--deck-accent-rgb),.3);margin-bottom:20px;"></div>
-          <div style="flex:1;">${stats.length?`<div style="display:flex;flex-direction:column;gap:16px;">${_zoneStats(stats)}${hasGrid?body:_zoneBullets(pts)}</div>`:body||`<p style="font-size:13px;opacity:.5;color:var(--deck-text);line-height:1.65;">${escapeHtml(slide.objective||slide.visual_suggestion||'')}</p>`}</div>
-          <div class="present-hint">Arrow keys or click to navigate · Esc to exit</div>
+          <div class="motion-item" style="--delay:70ms;font-size:${titleFs};font-weight:700;font-family:Georgia,serif;line-height:1.2;letter-spacing:-.01em;color:var(--deck-text);margin-bottom:8px;max-width:620px;">${escapeHtml(slide.title)}</div>
+          ${slide.subtitle?`<div class="motion-item" style="--delay:140ms;font-size:12.5px;opacity:.5;color:var(--deck-text);margin-bottom:14px;line-height:1.58;font-weight:300;">${escapeHtml(slide.subtitle)}</div>`:'<div style="margin-bottom:12px;"></div>'}
+          <div class="motion-item" style="--delay:180ms;width:100%;height:1px;background:rgba(var(--deck-accent-rgb),.28);margin-bottom:18px;"></div>
+          <div style="flex:1;overflow:hidden;">
+            ${stats.length?`<div style="display:flex;flex-direction:column;gap:14px;">${_execStats(stats)}${hasGrid?bodyZone:_execBullets(pts)}</div>`:bodyZone||`<p style="font-size:13px;opacity:.48;color:var(--deck-text);line-height:1.65;font-weight:300;">${escapeHtml(slide.objective||slide.visual_suggestion||'')}</p>`}
+          </div>
+          <div class="motion-item" style="--delay:700ms;padding-top:10px;border-top:1px solid rgba(var(--deck-accent-rgb),.12);margin-top:12px;display:flex;justify-content:flex-end;">
+            <span style="font-size:9px;opacity:.2;color:var(--deck-text);">${index+1} / ${total}</span>
+          </div>
+          <div class="present-hint">Arrow keys or click · Esc to exit</div>
         </div>`;
     }
 
@@ -2714,13 +2780,18 @@
     }
 
     async function generateSlides(forceNewTemplate = false) {
-      const nextTemplateId = forceNewTemplate || !currentDeckTemplateId
-        ? pickNextTemplateId(Boolean(currentDeckTemplateId))
-        : currentDeckTemplateId;
+      // If a specific theme was already set (via selectTheme), honour it.
+      // forceNewTemplate with no specific ID → cycle to next theme.
+      const nextTemplateId = (forceNewTemplate && currentDeckTemplateId)
+        ? currentDeckTemplateId   // selectTheme already set it
+        : forceNewTemplate
+          ? pickNextTemplateId(true)
+          : (currentDeckTemplateId || pickNextTemplateId(false));
       document.getElementById('slideDeckLoading').style.display = 'block';
       document.getElementById('slideDeckBody').style.display = 'none';
       document.getElementById('slideNav').style.display = 'none';
       document.getElementById('slideStrip').style.display = 'none';
+      document.getElementById('themePickerBar').style.display = 'none';
       document.getElementById('presentBtn').style.display = 'none';
       document.getElementById('slidesContainer').innerHTML = '';
       document.getElementById('slideStrip').innerHTML = '';
@@ -2767,6 +2838,30 @@
       }
     }
 
+    function renderThemePills() {
+      const pills = document.getElementById('themePills');
+      if (!pills) return;
+      pills.style.display = 'flex';
+      pills.style.gap = '8px';
+      pills.style.flexWrap = 'nowrap';
+      pills.innerHTML = DECK_TEMPLATE_PRESETS.map(preset => {
+        const active = preset.template_id === currentDeckTemplateId;
+        return `<button class="theme-pill ${active ? 'active' : ''}"
+          onclick="selectTheme('${preset.template_id}')"
+          title="${escapeHtml(preset.theme_name)}">
+          <span class="theme-pill-dot" style="background:${escapeHtml(preset.palette.accent)};box-shadow:0 0 0 3px ${escapeHtml(preset.palette.accent)}22;"></span>
+          ${escapeHtml(preset.theme_name)}
+        </button>`;
+      }).join('');
+    }
+
+    async function selectTheme(templateId) {
+      if (templateId === currentDeckTemplateId) return;
+      currentDeckTemplateId = templateId;
+      renderThemePills();
+      await generateSlides(false);
+    }
+
     function renderSlides(deck) {
       currentDeckData = deck;
       currentDeckTemplateId = deck.meta?.template_id || currentDeckTemplateId || DECK_TEMPLATE_PRESETS[0].template_id;
@@ -2782,7 +2877,7 @@
       dots.innerHTML = '';
       wrap.style.setProperty('--deck-accent-ui', deck.meta?.palette?.accent || '#7DD3FC');
 
-      // Assign per-slide layout variants based on theme
+      // Assign per-slide layouts
       deck.slides = assignSlideLayouts(deck.slides, currentDeckTemplateId);
 
       deck.slides.forEach((slide, i) => {
@@ -2796,6 +2891,7 @@
         slideEl.innerHTML = createSlideMarkup(slide, i, deck.slides.length);
         container.appendChild(slideEl);
 
+        // Thumbnail strip
         const thumb = document.createElement('button');
         thumb.type = 'button';
         thumb.className = `slide-thumb template-${currentDeckTemplateId} ${i === 0 ? 'active' : ''}`;
@@ -2819,16 +2915,17 @@
 
       document.getElementById('slideDeckTitle').textContent = deck.title;
       document.getElementById('slideDeckSubtitle').textContent = `${deck.subtitle} · ${deck.meta.theme_name} · ${deck.slides.length} slides`;
-      document.getElementById('slideThemeBadge').textContent = deck.meta?.theme_name || 'Editorial Midnight';
       document.getElementById('slideDeckLoading').style.display = 'none';
       document.getElementById('slideDeckBody').style.display = 'grid';
       document.getElementById('slideNav').style.display = 'flex';
       document.getElementById('slideStrip').style.display = 'flex';
+      document.getElementById('themePickerBar').style.display = 'flex';
       document.getElementById('presentBtn').style.display = 'flex';
+      renderThemePills();
       updateSlideNav();
     }
 
-    function goToSlide(index) {
+        function goToSlide(index) {
       currentSlideIndex = Math.max(0, Math.min(totalSlides - 1, index));
       updateSlideNav();
     }
@@ -2871,8 +2968,10 @@
     }
 
     function regenerateSlides() {
+      // Cycle to the next theme
+      currentDeckTemplateId = pickNextTemplateId(true);
       slidesGenerated = false;
-      generateSlides(true);
+      generateSlides(false);
     }
 
     // ── REAL SHARE REPORT (saves to backend) ──
