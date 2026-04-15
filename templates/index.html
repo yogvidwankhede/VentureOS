@@ -426,7 +426,8 @@
 
     .slide-shell {
       position: relative; z-index: 1; height: 100%;
-      padding: 28px 30px 26px; display: flex; flex-direction: column;
+      /* padding/display/flex-direction set per-theme via inline style */
+      box-sizing: border-box; overflow: hidden;
     }
     .slide-topbar {
       display: flex; align-items: center; justify-content: space-between; gap: 18px;
@@ -447,115 +448,29 @@
     .slide-top-meta {
       font-size: 11px; color: rgba(226,232,240,0.58); letter-spacing: 0.12em; text-transform: uppercase;
     }
-    .slide-canvas {
-      flex: 1; display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(280px, 0.82fr);
-      gap: 28px; align-items: end;
-    }
-    .layout-cover .slide-canvas { grid-template-columns: minmax(0, 1.3fr) minmax(250px, 0.7fr); }
-    .layout-metrics .slide-canvas,
-    .layout-comparison .slide-canvas { grid-template-columns: minmax(0, 1fr) minmax(300px, 0.96fr); }
-    .layout-roadmap .slide-canvas { grid-template-columns: minmax(0, 0.95fr) minmax(320px, 1.05fr); }
-    .layout-closing .slide-canvas { grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.76fr); }
-    .slide-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-    .layout-cover .slide-main { justify-content: flex-end; }
-    .layout-metrics .slide-main { justify-content: space-between; }
-    .slide-title {
-      font-family: 'Instrument Serif', serif;
-      font-size: clamp(2.4rem, 4.8vw, 4.4rem);
-      line-height: 0.96; letter-spacing: -0.055em; max-width: 10ch;
-      color: #fff;
-    }
-    .layout-metrics .slide-title,
-    .layout-roadmap .slide-title { max-width: 12ch; }
-    .slide-subtitle {
-      max-width: 36ch; font-size: 1rem; line-height: 1.58;
-      color: rgba(241,245,249,0.76); font-weight: 300;
-    }
-    .slide-note-chip {
-      display: inline-flex; align-items: center; gap: 8px;
-      padding: 8px 12px; width: fit-content; border-radius: 999px;
-      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
-      color: rgba(241,245,249,0.7); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
-    }
-    .slide-copy { list-style: none; display: flex; flex-direction: column; gap: 10px; max-width: 38ch; }
-    .slide-copy-item {
-      display: flex; align-items: flex-start; gap: 12px;
-      font-size: 0.95rem; font-weight: 300; line-height: 1.48;
-      color: rgba(241,245,249,0.86);
-    }
-    .slide-copy-bullet {
-      width: 22px; height: 22px; border-radius: 999px;
-      display: inline-flex; align-items: center; justify-content: center;
-      flex-shrink: 0; margin-top: 1px;
-      background: rgba(var(--deck-accent-rgb), 0.16);
-      border: 1px solid rgba(var(--deck-accent-rgb), 0.26);
-      color: var(--deck-accent); font-size: 11px; font-weight: 600;
-    }
-    .slide-side { min-width: 0; display: flex; flex-direction: column; gap: 14px; justify-content: flex-end; }
-    .slide-visual-panel,
-    .slide-stat-card,
-    .slide-roadmap-item {
-      background: linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04));
-      border: 1px solid rgba(255,255,255,0.12);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
-      backdrop-filter: blur(18px);
-    }
-    .slide-visual-panel {
-      min-height: 255px; border-radius: 24px; padding: 22px;
-      display: flex; flex-direction: column; justify-content: space-between; gap: 18px;
-    }
-    .slide-visual-label {
-      font-size: 10px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase;
-      color: rgba(226,232,240,0.54);
-    }
-    .slide-visual-title {
-      font-size: 1rem; line-height: 1.46; font-weight: 400; color: #fff; max-width: 22ch;
-    }
-    .slide-visual-orbit {
-      align-self: flex-end; width: 180px; height: 180px; border-radius: 50%;
-      background: radial-gradient(circle, rgba(var(--deck-accent-rgb), 0.54) 0%, rgba(var(--deck-accent-rgb), 0.14) 45%, rgba(var(--deck-accent-rgb), 0) 72%);
-      position: relative;
-    }
-    .slide-visual-orbit::before,
-    .slide-visual-orbit::after {
-      content: ''; position: absolute; inset: 50%; transform: translate(-50%, -50%);
-      border-radius: 50%; border: 1px solid rgba(255,255,255,0.18);
-    }
-    .slide-visual-orbit::before { width: 110px; height: 110px; }
-    .slide-visual-orbit::after { width: 156px; height: 156px; opacity: 0.48; }
-    .slide-visual-caption { font-size: 12px; line-height: 1.55; color: rgba(241,245,249,0.7); }
-    .slide-stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-    .slide-stat-card {
-      border-radius: 20px; padding: 16px 16px 14px;
-      display: flex; flex-direction: column; justify-content: space-between; gap: 6px;
-      min-height: 118px;
-    }
-    .slide-stat-value {
-      font-family: 'Instrument Serif', serif; font-size: clamp(1.6rem, 2.8vw, 2.4rem);
-      line-height: 0.96; letter-spacing: -0.04em; color: #fff;
-    }
-    .slide-stat-label {
-      font-size: 10px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase;
-      color: rgba(226,232,240,0.54); line-height: 1.45;
-    }
-    .slide-roadmap { display: grid; gap: 12px; }
-    .slide-roadmap-item {
-      border-radius: 20px; padding: 16px 18px;
-      display: grid; grid-template-columns: 46px 1fr; gap: 14px; align-items: start;
-    }
-    .slide-roadmap-step {
-      width: 46px; height: 46px; border-radius: 16px;
-      display: flex; align-items: center; justify-content: center;
-      background: rgba(var(--deck-accent-rgb), 0.14);
-      border: 1px solid rgba(var(--deck-accent-rgb), 0.22);
-      color: var(--deck-accent); font-size: 12px; font-weight: 600; letter-spacing: 0.12em;
-    }
-    .slide-roadmap-copy { font-size: 0.94rem; line-height: 1.5; color: rgba(241,245,249,0.86); }
-    .slide-foot {
-      display: flex; align-items: flex-end; justify-content: space-between; gap: 18px;
-      margin-top: 22px;
-    }
-    .slide-footer-copy { max-width: 32ch; font-size: 12px; line-height: 1.55; color: rgba(226,232,240,0.62); }
+    /* ── SLIDE CONTENT: all layout is done via inline styles in JS theme fns ── */
+    /* These legacy classes are kept only for backward compat with old renders  */
+    .slide-canvas { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .slide-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .slide-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+    /* Intentionally reset old overrides so inline styles win cleanly */
+    .slide-title { all: unset; display: block; }
+    .slide-subtitle { all: unset; display: block; }
+    .slide-stat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
+    .slide-stat-card { border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+    .slide-stat-value { font-size: 24px; font-weight: 700; color: var(--deck-accent); }
+    .slide-stat-label { font-size: 10px; opacity: .55; text-transform: uppercase; letter-spacing: .07em; color: var(--deck-text); }
+    .slide-roadmap { display: flex; flex-direction: column; gap: 10px; }
+    .slide-roadmap-item { border-radius: 8px; padding: 12px 14px; display: flex; gap: 12px; align-items: flex-start; }
+    .slide-roadmap-step { flex-shrink: 0; width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: var(--deck-accent); background: rgba(var(--deck-accent-rgb),.14); }
+    .slide-roadmap-copy { font-size: 13px; line-height: 1.5; color: var(--deck-text); }
+    .slide-foot { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 18px; }
+    .slide-footer-copy { font-size: 11px; opacity: .5; color: var(--deck-text); }
+    .slide-visual-panel { border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 12px; border: 1px solid rgba(255,255,255,.1); }
+    .slide-visual-label { font-size: 9px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; opacity: .5; color: var(--deck-text); }
+    .slide-visual-title { font-size: 13px; line-height: 1.55; color: var(--deck-text); }
+    .slide-visual-orbit { display: none; }
+    .slide-visual-caption { font-size: 11px; opacity: .45; color: var(--deck-text); line-height: 1.5; }
     .slide-brand,
     .slide-slide-number {
       font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
@@ -1020,7 +935,7 @@
       .slide-deck-body { padding: 16px; grid-template-columns: 1fr; }
       .slide-inspector { order: 2; }
       .deck-slide { min-height: 0; }
-      .slide-shell { padding: 20px 20px 18px; }
+      /* slide-shell padding handled per-theme */
       .slide-canvas,
       .layout-cover .slide-canvas,
       .layout-metrics .slide-canvas,
@@ -2864,7 +2779,14 @@
 
     function renderSlides(deck) {
       currentDeckData = deck;
-      currentDeckTemplateId = deck.meta?.template_id || currentDeckTemplateId || DECK_TEMPLATE_PRESETS[0].template_id;
+      // currentDeckTemplateId is set BEFORE calling renderSlides (in generateSlides/selectTheme)
+      // Don't override it from deck.meta — that locks it to whatever the server returned.
+      // Just ensure we have a fallback if it's still empty.
+      if (!currentDeckTemplateId) {
+        currentDeckTemplateId = deck.meta?.template_id || DECK_TEMPLATE_PRESETS[0].template_id;
+      }
+      // Sync deck.meta so theme name badge reflects reality
+      if (deck.meta) deck.meta.template_id = currentDeckTemplateId;
       totalSlides = deck.slides.length;
       currentSlideIndex = 0;
 
