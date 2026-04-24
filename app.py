@@ -16,7 +16,7 @@ import threading
 from io import BytesIO
 from urllib.parse import quote
 from urllib.request import Request, urlopen
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 load_dotenv()
 
@@ -337,6 +337,279 @@ def _fallback_image_to_data_url(image, fmt='JPEG', quality=90):
     return _fallback_binary_data_url(buffer.getvalue(), mime)
 
 
+def _fallback_hex_to_rgba(hex_color, alpha=255):
+    hex_color = _fallback_clean_text(hex_color, '#FFFFFF')
+    if not hex_color.startswith('#') or len(hex_color) != 7:
+        hex_color = '#FFFFFF'
+    return tuple(int(hex_color[i:i+2], 16) for i in (1, 3, 5)) + (alpha,)
+
+
+def _fallback_resize_cover(image, size, focus_x=0.5, focus_y=0.5):
+    target_w, target_h = size
+    if target_w <= 0 or target_h <= 0:
+        raise ValueError('Target size must be positive')
+
+    src_w, src_h = image.size
+    scale = max(target_w / src_w, target_h / src_h)
+    resized = image.resize(
+        (max(int(src_w * scale), 1), max(int(src_h * scale), 1)),
+        Image.LANCZOS,
+    )
+    res_w, res_h = resized.size
+    left = int(max(0, min(res_w - target_w, (res_w - target_w) * focus_x)))
+    top = int(max(0, min(res_h - target_h, (res_h - target_h) * focus_y)))
+    return resized.crop((left, top, left + target_w, top + target_h))
+
+
+def _fallback_make_rounded_card(image, size, radius, focus_x=0.5, focus_y=0.5, border=None):
+    card = _fallback_resize_cover(image, size, focus_x=focus_x, focus_y=focus_y).convert('RGBA')
+    mask = Image.new('L', size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=radius, fill=255)
+    card.putalpha(mask)
+
+    if border:
+        border_overlay = Image.new('RGBA', size, (0, 0, 0, 0))
+        border_draw = ImageDraw.Draw(border_overlay)
+        border_draw.rounded_rectangle(
+            (1, 1, size[0] - 2, size[1] - 2),
+            radius=max(radius - 1, 0),
+            outline=border,
+            width=2,
+        )
+        card = Image.alpha_composite(card, border_overlay)
+
+    return card
+
+
+def _fallback_paste_card(canvas, card, position, shadow_alpha=52, shadow_offset=(0, 18)):
+    px, py = position
+    shadow = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
+    shadow_mask = Image.new('L', card.size, 0)
+    shadow_draw = ImageDraw.Draw(shadow_mask)
+    shadow_draw.rounded_rectangle(
+        (0, 0, card.size[0] - 1, card.size[1] - 1),
+        radius=36,
+        fill=shadow_alpha,
+    )
+    shadow_mask = shadow_mask.filter(ImageFilter.GaussianBlur(radius=22))
+    shadow.paste(
+        Image.new('RGBA', card.size, (0, 0, 0, 255)),
+        (px + shadow_offset[0], py + shadow_offset[1]),
+        shadow_mask,
+    )
+    canvas.alpha_composite(shadow)
+    canvas.alpha_composite(card, dest=(px, py))
+
+
+def _fallback_add_glow(canvas, center, radius, color, alpha=90, blur=56):
+    glow = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow)
+    cx, cy = center
+    glow_draw.ellipse(
+        (cx - radius, cy - radius, cx + radius, cy + radius),
+        fill=_fallback_hex_to_rgba(color, alpha),
+    )
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=blur))
+    canvas.alpha_composite(glow)
+
+
+def _fallback_anchor_group_for_slide(slide, index):
+    slide_type = _fallback_clean_text((slide or {}).get('type')).lower()
+    groups = {
+        'hook': 'hero',
+        'problem': 'tension',
+        'stakes': 'tension',
+        'solution': 'product',
+        'how_it_works': 'process',
+        'impact': 'traction',
+        'proof': 'traction',
+        'business_model': 'traction',
+        'vision': 'future',
+        'call_to_action': 'future',
+    }
+    if slide_type in groups:
+        return groups[slide_type]
+    return ['hero', 'tension', 'product', 'traction', 'future'][index % 5]
+
+
+def _fallback_compose_remixed_image(source_image, slide, index, image_options=None):
+    slide = slide or {}
+    slide_type = _fallback_clean_text(slide.get('type'), 'story').lower()
+    group_key = _fallback_anchor_group_for_slide(slide, index)
+    style_key = _fallback_clean_text((image_options or {}).get('style'), 'deck-illustration').lower()
+    palette = _fallback_image_palette(style_key)
+    line_color = _fallback_hex_to_rgba(palette['line'], 104)
+    accent_color = _fallback_hex_to_rgba(palette['accent'], 180)
+    accent_two_color = _fallback_hex_to_rgba(palette['accent2'], 148)
+    panel_fill = _fallback_hex_to_rgba(palette['panel'], 204)
+    panel_soft = _fallback_hex_to_rgba(palette['panel2'], 170)
+    border_color = _fallback_hex_to_rgba(palette['line'], 54)
+    canvas_size = (768, 768)
+
+    focus_map = {
+        'hero': (0.56, 0.38),
+        'tension': (0.30, 0.42),
+        'product': (0.64, 0.44),
+        'process': (0.48, 0.52),
+        'traction': (0.66, 0.32),
+        'future': (0.52, 0.24),
+    }
+    focus_x, focus_y = focus_map.get(group_key, (0.5, 0.5))
+    background = _fallback_resize_cover(source_image, canvas_size, focus_x=focus_x, focus_y=focus_y)
+    background = background.filter(ImageFilter.GaussianBlur(radius=20)).convert('RGBA')
+    background = ImageEnhance.Brightness(background).enhance(0.48 if group_key != 'future' else 0.62)
+    background = ImageEnhance.Contrast(background).enhance(1.10)
+
+    tint = Image.new('RGBA', canvas_size, _fallback_hex_to_rgba(palette['bg0'], 132))
+    canvas = Image.alpha_composite(background, tint)
+    canvas_draw = ImageDraw.Draw(canvas)
+    canvas_draw.rounded_rectangle((20, 20, 748, 748), radius=44, outline=border_color, width=2)
+    canvas_draw.line((126, 110, 642, 110), fill=line_color, width=2)
+
+    if group_key == 'hero':
+        _fallback_add_glow(canvas, (612, 186), 158, palette['accent'], alpha=96, blur=72)
+        hero_card = _fallback_make_rounded_card(
+            source_image,
+            (474, 604),
+            radius=40,
+            focus_x=0.58,
+            focus_y=0.38,
+            border=border_color,
+        )
+        _fallback_paste_card(canvas, hero_card, (246, 104))
+    elif group_key == 'tension':
+        _fallback_add_glow(canvas, (188, 164), 132, palette['accent2'], alpha=72, blur=68)
+        main_card = _fallback_make_rounded_card(
+            source_image,
+            (352, 504),
+            radius=36,
+            focus_x=0.24,
+            focus_y=0.44,
+            border=border_color,
+        )
+        side_card = _fallback_make_rounded_card(
+            source_image,
+            (236, 276),
+            radius=32,
+            focus_x=0.78,
+            focus_y=0.32,
+            border=border_color,
+        )
+        _fallback_paste_card(canvas, main_card, (108, 152), shadow_alpha=58)
+        _fallback_paste_card(canvas, side_card, (430, 218), shadow_alpha=46, shadow_offset=(0, 12))
+        canvas_draw.rounded_rectangle((94, 538, 674, 626), radius=28, fill=panel_fill)
+        canvas_draw.line((116, 582, 646, 582), fill=accent_color, width=4)
+        canvas_draw.ellipse((620, 554, 648, 582), fill=accent_two_color)
+    elif group_key == 'product':
+        _fallback_add_glow(canvas, (600, 198), 138, palette['accent'], alpha=82, blur=62)
+        main_card = _fallback_make_rounded_card(
+            source_image,
+            (430, 360),
+            radius=34,
+            focus_x=0.64,
+            focus_y=0.38,
+            border=border_color,
+        )
+        support_left = _fallback_make_rounded_card(
+            source_image,
+            (182, 224),
+            radius=28,
+            focus_x=0.22,
+            focus_y=0.40,
+            border=border_color,
+        )
+        support_right = _fallback_make_rounded_card(
+            source_image,
+            (182, 224),
+            radius=28,
+            focus_x=0.82,
+            focus_y=0.62,
+            border=border_color,
+        )
+        _fallback_paste_card(canvas, main_card, (168, 138))
+        _fallback_paste_card(canvas, support_left, (74, 442), shadow_alpha=40, shadow_offset=(0, 10))
+        _fallback_paste_card(canvas, support_right, (512, 442), shadow_alpha=40, shadow_offset=(0, 10))
+        canvas_draw.line((256, 512, 384, 350), fill=accent_color, width=5)
+        canvas_draw.line((508, 512, 384, 350), fill=accent_two_color, width=5)
+        for cx, cy, fill in ((256, 512, accent_color), (384, 350, accent_two_color), (508, 512, accent_color)):
+            canvas_draw.ellipse((cx - 10, cy - 10, cx + 10, cy + 10), fill=fill)
+    elif group_key == 'process':
+        _fallback_add_glow(canvas, (388, 366), 112, palette['accent2'], alpha=88, blur=54)
+        cards = [
+            ((64, 234), (180, 226), (0.18, 0.34)),
+            ((294, 122), (180, 226), (0.52, 0.46)),
+            ((524, 234), (180, 226), (0.80, 0.60)),
+        ]
+        centers = []
+        for position, size, focus in cards:
+            step_card = _fallback_make_rounded_card(
+                source_image,
+                size,
+                radius=28,
+                focus_x=focus[0],
+                focus_y=focus[1],
+                border=border_color,
+            )
+            _fallback_paste_card(canvas, step_card, position, shadow_alpha=34, shadow_offset=(0, 8))
+            centers.append((position[0] + size[0] // 2, position[1] + size[1] // 2))
+        canvas_draw.line((centers[0][0] + 68, centers[0][1], centers[1][0] - 68, centers[1][1]), fill=accent_color, width=6)
+        canvas_draw.line((centers[1][0] + 68, centers[1][1], centers[2][0] - 68, centers[2][1]), fill=accent_two_color, width=6)
+        for cx, cy in centers:
+            canvas_draw.ellipse((cx - 12, cy - 12, cx + 12, cy + 12), fill=panel_soft, outline=accent_color, width=3)
+    elif group_key == 'traction':
+        _fallback_add_glow(canvas, (642, 158), 128, palette['accent'], alpha=84, blur=66)
+        stripe_specs = [
+            (108, 128, 156, 500, 0.18, 0.24),
+            (306, 98, 156, 560, 0.50, 0.42),
+            (504, 158, 156, 470, 0.82, 0.30),
+        ]
+        for x, y, width, height, fx, fy in stripe_specs:
+            stripe_card = _fallback_make_rounded_card(
+                source_image,
+                (width, height),
+                radius=28,
+                focus_x=fx,
+                focus_y=fy,
+                border=border_color,
+            )
+            _fallback_paste_card(canvas, stripe_card, (x, y), shadow_alpha=30, shadow_offset=(0, 8))
+        chart_points = [(112, 584), (244, 530), (376, 552), (508, 458), (640, 420)]
+        canvas_draw.line(chart_points, fill=accent_color, width=6, joint='curve')
+        for cx, cy in chart_points:
+            canvas_draw.ellipse((cx - 10, cy - 10, cx + 10, cy + 10), fill=accent_two_color)
+    elif group_key == 'future':
+        horizon = _fallback_resize_cover(source_image, canvas_size, focus_x=0.52, focus_y=0.18)
+        horizon = horizon.filter(ImageFilter.GaussianBlur(radius=8)).convert('RGBA')
+        horizon = ImageEnhance.Brightness(horizon).enhance(0.74)
+        canvas = Image.alpha_composite(horizon, Image.new('RGBA', canvas_size, _fallback_hex_to_rgba(palette['bg1'], 116)))
+        canvas_draw = ImageDraw.Draw(canvas)
+        canvas_draw.rounded_rectangle((20, 20, 748, 748), radius=44, outline=border_color, width=2)
+        canvas_draw.line((126, 110, 642, 110), fill=line_color, width=2)
+        _fallback_add_glow(canvas, (628, 170), 184, palette['accent2'], alpha=92, blur=80)
+        spotlight = _fallback_make_rounded_card(
+            source_image,
+            (310, 404),
+            radius=38,
+            focus_x=0.46,
+            focus_y=0.28,
+            border=border_color,
+        )
+        _fallback_paste_card(canvas, spotlight, (396, 208), shadow_alpha=44, shadow_offset=(0, 12))
+
+    if slide_type in {'problem', 'stakes'}:
+        canvas_draw.rounded_rectangle((86, 84, 208, 130), radius=22, fill=panel_soft)
+        canvas_draw.ellipse((108, 98, 122, 112), fill=accent_color)
+    elif slide_type in {'solution', 'how_it_works', 'business_model'}:
+        canvas_draw.rounded_rectangle((540, 82, 682, 128), radius=22, fill=panel_soft)
+        canvas_draw.ellipse((562, 96, 576, 110), fill=accent_two_color)
+    elif slide_type in {'impact', 'proof'}:
+        canvas_draw.rounded_rectangle((562, 602, 698, 646), radius=20, fill=panel_fill)
+        canvas_draw.line((584, 624, 672, 624), fill=accent_color, width=4)
+
+    return canvas.convert('RGB')
+
+
 def _fallback_variant_recipe(slide_type, index):
     slide_type = _fallback_clean_text(slide_type, 'story').lower()
     recipes = {
@@ -396,15 +669,20 @@ def _fallback_apply_variant(image, slide, index):
     return variant
 
 
-def _fallback_derive_image_meta(source_meta, slide, index):
+def _fallback_derive_image_meta(source_meta, slide, index, image_options=None):
     source_image = _fallback_image_from_data_url(source_meta.get('image_url'))
-    variant = _fallback_apply_variant(source_image, slide, index)
+    variant = _fallback_compose_remixed_image(
+        source_image,
+        slide,
+        index,
+        image_options=image_options,
+    )
     return {
         'image_url': _fallback_image_to_data_url(variant, fmt='JPEG', quality=90),
         'image_prompt': source_meta.get('image_prompt') or _fallback_clean_text((slide or {}).get('visual_suggestion')),
         'image_model': FALLBACK_IMAGE_MODEL_LABEL,
-        'image_repo_id': 'pollinations/flux-derived',
-        'image_status': 'derived',
+        'image_repo_id': 'pollinations/flux-remixed',
+        'image_status': 'remixed',
     }
 
 
@@ -647,46 +925,417 @@ def _fallback_scene_layers(slide_type, palette, rnd):
     """
 
 
+def _fallback_mix_rgb(color_a, color_b, ratio):
+    ratio = max(0.0, min(1.0, float(ratio)))
+    return tuple(
+        int(color_a[idx] + (color_b[idx] - color_a[idx]) * ratio)
+        for idx in range(3)
+    )
+
+
+def _fallback_gradient_canvas(size, top_hex, bottom_hex, mid_hex=None):
+    width, height = size
+    top = _fallback_hex_to_rgba(top_hex)[:3]
+    bottom = _fallback_hex_to_rgba(bottom_hex)[:3]
+    mid = _fallback_hex_to_rgba(mid_hex, 255)[:3] if mid_hex else None
+    image = Image.new('RGBA', size, (0, 0, 0, 255))
+    draw = ImageDraw.Draw(image)
+
+    for y in range(height):
+        position = y / max(height - 1, 1)
+        if mid:
+            if position <= 0.58:
+                color = _fallback_mix_rgb(top, mid, position / 0.58)
+            else:
+                color = _fallback_mix_rgb(mid, bottom, (position - 0.58) / 0.42)
+        else:
+            color = _fallback_mix_rgb(top, bottom, position)
+        draw.line((0, y, width, y), fill=color + (255,))
+    return image
+
+
+def _fallback_round_image(image, radius, border=None):
+    rounded = image.convert('RGBA')
+    mask = Image.new('L', rounded.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle(
+        (0, 0, rounded.size[0] - 1, rounded.size[1] - 1),
+        radius=radius,
+        fill=255,
+    )
+    rounded.putalpha(mask)
+
+    if border:
+        border_layer = Image.new('RGBA', rounded.size, (0, 0, 0, 0))
+        border_draw = ImageDraw.Draw(border_layer)
+        border_draw.rounded_rectangle(
+            (1, 1, rounded.size[0] - 2, rounded.size[1] - 2),
+            radius=max(radius - 1, 0),
+            outline=border,
+            width=2,
+        )
+        rounded = Image.alpha_composite(rounded, border_layer)
+    return rounded
+
+
+def _fallback_scene_family(topic):
+    if topic in {'gaming', 'software', 'finance'}:
+        return 'workspace'
+    if topic in {'housing', 'education'}:
+        return 'interior'
+    if topic in {'restaurant', 'logistics'}:
+        return 'operations'
+    if topic == 'health':
+        return 'lab'
+    if topic == 'sports':
+        return 'arena'
+    return 'studio'
+
+
+def _fallback_add_scene_finish(scene, palette):
+    vignette = Image.new('RGBA', scene.size, (0, 0, 0, 0))
+    vignette_draw = ImageDraw.Draw(vignette)
+    vignette_draw.ellipse(
+        (-scene.size[0] * 0.05, -scene.size[1] * 0.1, scene.size[0] * 1.05, scene.size[1] * 1.1),
+        fill=(0, 0, 0, 160),
+    )
+    vignette = vignette.filter(ImageFilter.GaussianBlur(radius=64))
+    scene = Image.alpha_composite(scene, vignette)
+
+    highlight = Image.new('RGBA', scene.size, (0, 0, 0, 0))
+    highlight_draw = ImageDraw.Draw(highlight)
+    highlight_draw.ellipse(
+        (scene.size[0] * 0.42, -scene.size[1] * 0.05, scene.size[0] * 0.95, scene.size[1] * 0.55),
+        fill=_fallback_hex_to_rgba(palette['accent'], 62),
+    )
+    highlight = highlight.filter(ImageFilter.GaussianBlur(radius=70))
+    scene = Image.alpha_composite(scene, highlight)
+    return scene
+
+
+def _fallback_draw_workspace_scene(scene, draw, palette, rnd, topic):
+    width, height = scene.size
+    line = _fallback_hex_to_rgba(palette['line'], 38)
+    panel = _fallback_hex_to_rgba(palette['panel'], 210)
+    panel2 = _fallback_hex_to_rgba(palette['panel2'], 236)
+    accent = _fallback_hex_to_rgba(palette['accent'], 212)
+    accent2 = _fallback_hex_to_rgba(palette['accent2'], 186)
+
+    for idx in range(3):
+        x0 = 34 + idx * 72
+        draw.rounded_rectangle((x0, 64, x0 + 54, height - 142), radius=18, fill=line)
+
+    sunlight = Image.new('RGBA', scene.size, (0, 0, 0, 0))
+    sunlight_draw = ImageDraw.Draw(sunlight)
+    sunlight_draw.polygon(
+        [(86, 82), (238, 82), (480, height - 120), (304, height - 120)],
+        fill=_fallback_hex_to_rgba('#F7C48B', 62),
+    )
+    sunlight = sunlight.filter(ImageFilter.GaussianBlur(radius=26))
+    scene.alpha_composite(sunlight)
+
+    shelf_y = 56
+    for idx in range(6):
+        x0 = 246 + idx * 92
+        draw.rounded_rectangle((x0, shelf_y, x0 + 70, shelf_y + 84), radius=16, fill=panel)
+        draw.rounded_rectangle((x0 + 10, shelf_y + 18, x0 + 58, shelf_y + 32), radius=7, fill=line)
+        draw.rounded_rectangle((x0 + 10, shelf_y + 42, x0 + 46, shelf_y + 54), radius=6, fill=_fallback_hex_to_rgba(palette['accent'], 78))
+
+    desk_top = height - 142
+    draw.polygon(
+        [(64, desk_top), (width - 86, desk_top - 18), (width - 40, height - 72), (96, height - 52)],
+        fill=_fallback_hex_to_rgba('#6D4938', 224),
+    )
+    draw.rounded_rectangle((54, height - 118, width - 76, height - 70), radius=22, fill=_fallback_hex_to_rgba('#2A1817', 186))
+
+    draw.rounded_rectangle((220, 174, 514, 434), radius=34, fill=panel2)
+    for idx in range(4):
+        draw.rounded_rectangle((248 + idx * 62, 202, 292 + idx * 62, 214), radius=6, fill=line)
+    draw.arc((286, 246, 590, 484), start=196, end=318, fill=accent, width=12)
+    draw.arc((282, 312, 642, 506), start=202, end=330, fill=accent2, width=10)
+    draw.ellipse((484, 258, 604, 378), fill=_fallback_hex_to_rgba(palette['accent2'], 52))
+
+    monitor_specs = [
+        (170, 472, 128, 88, panel),
+        (334, 422, 170, 104, panel2),
+        (548, 454, 132, 92, panel),
+    ]
+    for x, y, w, h, fill in monitor_specs:
+        draw.rounded_rectangle((x, y, x + w, y + h), radius=18, fill=fill)
+        draw.rounded_rectangle((x + 12, y + 12, x + w - 12, y + h - 12), radius=12, fill=_fallback_hex_to_rgba(palette['bg1'], 238))
+        draw.rounded_rectangle((x + 24, y + 26, x + w - 24, y + 38), radius=5, fill=line)
+        draw.rounded_rectangle((x + 24, y + 50, x + w - 34, y + 60), radius=5, fill=_fallback_hex_to_rgba(palette['accent'], 92))
+
+    draw.rounded_rectangle((width - 116, 120, width - 74, height - 188), radius=20, fill=_fallback_hex_to_rgba('#22382B', 182))
+    draw.ellipse((width - 112, height - 252, width - 76, height - 214), fill=_fallback_hex_to_rgba('#4DB875', 190))
+    draw.ellipse((width - 136, height - 222, width - 92, height - 176), fill=_fallback_hex_to_rgba('#3D9963', 180))
+
+    if topic == 'finance':
+        draw.ellipse((width - 220, 180, width - 120, 280), fill=_fallback_hex_to_rgba(palette['accent2'], 64))
+        draw.line((width - 234, height - 180, width - 92, height - 244), fill=accent, width=8)
+        for idx in range(4):
+            cx = width - 234 + idx * 46
+            cy = height - 180 - (idx % 2) * 18 - idx * 12
+            draw.ellipse((cx - 11, cy - 11, cx + 11, cy + 11), fill=accent2)
+
+
+def _fallback_draw_interior_scene(scene, draw, palette, rnd, topic):
+    width, height = scene.size
+    line = _fallback_hex_to_rgba(palette['line'], 48)
+    panel = _fallback_hex_to_rgba(palette['panel'], 216)
+    panel2 = _fallback_hex_to_rgba(palette['panel2'], 238)
+
+    for idx in range(4):
+        x0 = 46 + idx * 80
+        draw.rounded_rectangle((x0, 54, x0 + 64, height - 150), radius=18, fill=line)
+
+    sunlight = Image.new('RGBA', scene.size, (0, 0, 0, 0))
+    sunlight_draw = ImageDraw.Draw(sunlight)
+    sunlight_draw.polygon(
+        [(80, 64), (238, 64), (458, height - 122), (260, height - 96)],
+        fill=_fallback_hex_to_rgba('#EEC88D', 72),
+    )
+    sunlight = sunlight.filter(ImageFilter.GaussianBlur(radius=32))
+    scene.alpha_composite(sunlight)
+
+    draw.rounded_rectangle((width * 0.52, 58, width - 64, height * 0.42), radius=28, fill=panel2)
+    draw.rounded_rectangle((width * 0.56, height * 0.18, width - 94, height * 0.22), radius=14, fill=line)
+    for idx in range(4):
+        x0 = int(width * 0.58) + idx * 62
+        draw.rounded_rectangle((x0, int(height * 0.26), x0 + 42, int(height * 0.58)), radius=12, fill=panel)
+        for shelf in range(4):
+            y = int(height * 0.3) + shelf * 48
+            draw.rounded_rectangle((x0 + 8, y, x0 + 34, y + 10), radius=4, fill=_fallback_hex_to_rgba(palette['accent'], 88 if idx % 2 == 0 else 54))
+
+    draw.line((width * 0.48, height * 0.36, width - 74, height * 0.36), fill=line, width=6)
+    draw.line((width * 0.48, height * 0.38, width - 74, height * 0.38), fill=_fallback_hex_to_rgba(palette['bg0'], 160), width=2)
+
+    floor_y = int(height * 0.66)
+    draw.polygon(
+        [(0, floor_y), (width, floor_y - 24), (width, height), (0, height)],
+        fill=_fallback_hex_to_rgba('#845E49', 220),
+    )
+    for idx in range(9):
+        x = 12 + idx * 82
+        draw.line((x, floor_y + 18, x + 38, height - 10), fill=_fallback_hex_to_rgba('#A77A58', 104), width=3)
+
+    draw.rounded_rectangle((104, height - 222, 286, height - 120), radius=28, fill=panel)
+    draw.rounded_rectangle((286, height - 204, 394, height - 120), radius=24, fill=panel2)
+    draw.rounded_rectangle((318, height - 248, 436, height - 160), radius=22, fill=_fallback_hex_to_rgba(palette['panel2'], 198))
+    draw.ellipse((width * 0.76, height - 224, width * 0.82, height - 170), fill=_fallback_hex_to_rgba('#63B67A', 184))
+    draw.ellipse((width * 0.72, height - 188, width * 0.79, height - 132), fill=_fallback_hex_to_rgba('#4C9E67', 188))
+
+    if topic == 'housing':
+        draw.rounded_rectangle((width * 0.56, height * 0.48, width - 134, height * 0.56), radius=16, fill=_fallback_hex_to_rgba('#A17053', 168))
+        draw.rounded_rectangle((width * 0.6, height * 0.52, width * 0.68, height * 0.64), radius=12, fill=_fallback_hex_to_rgba(palette['panel'], 180))
+
+
+def _fallback_draw_operations_scene(scene, draw, palette, rnd, topic):
+    width, height = scene.size
+    line = _fallback_hex_to_rgba(palette['line'], 50)
+    panel = _fallback_hex_to_rgba(palette['panel'], 220)
+    panel2 = _fallback_hex_to_rgba(palette['panel2'], 240)
+    accent = _fallback_hex_to_rgba(palette['accent'], 188)
+    accent2 = _fallback_hex_to_rgba(palette['accent2'], 176)
+
+    draw.rounded_rectangle((64, 78, width - 64, height - 124), radius=36, fill=panel)
+    draw.rounded_rectangle((96, 112, width * 0.42, height * 0.36), radius=26, fill=panel2)
+    draw.rounded_rectangle((width * 0.48, 112, width - 100, height * 0.56), radius=30, fill=panel2)
+    draw.rounded_rectangle((96, height * 0.46, width * 0.42, height - 168), radius=28, fill=_fallback_hex_to_rgba(palette['panel2'], 188))
+    draw.rounded_rectangle((width * 0.48, height * 0.62, width - 100, height - 140), radius=28, fill=_fallback_hex_to_rgba(palette['accent'], 36))
+
+    for idx in range(4):
+        x0 = 124 + idx * 62
+        draw.rounded_rectangle((x0, 148, x0 + 42, 216), radius=12, fill=_fallback_hex_to_rgba(palette['accent'], 62 if idx % 2 == 0 else 34))
+    for idx in range(5):
+        x0 = int(width * 0.53) + idx * 64
+        draw.rounded_rectangle((x0, 166, x0 + 42, 42 + 166), radius=12, fill=line)
+    draw.rounded_rectangle((int(width * 0.53), 238, width - 134, 252), radius=7, fill=line)
+    draw.rounded_rectangle((int(width * 0.53), 276, width - 214, 288), radius=6, fill=_fallback_hex_to_rgba(palette['accent'], 72))
+
+    draw.line((148, height - 176, width - 156, height - 238), fill=accent, width=10)
+    draw.line((152, height - 132, width - 124, height - 178), fill=accent2, width=8)
+    for point in [(148, height - 176), (332, height - 210), (528, height - 192), (width - 156, height - 238)]:
+        draw.ellipse((point[0] - 12, point[1] - 12, point[0] + 12, point[1] + 12), fill=accent2)
+
+    if topic == 'restaurant':
+        for idx in range(5):
+            x0 = int(width * 0.56) + idx * 54
+            draw.rounded_rectangle((x0, 352, x0 + 36, 456), radius=10, fill=_fallback_hex_to_rgba('#B1805B', 166))
+        draw.rounded_rectangle((width * 0.6, height - 214, width * 0.82, height - 132), radius=24, fill=panel)
+    elif topic == 'logistics':
+        for idx in range(3):
+            base_x = 148 + idx * 110
+            draw.rounded_rectangle((base_x, height - 284, base_x + 82, height - 210), radius=18, fill=_fallback_hex_to_rgba('#9A704C', 176))
+            draw.rounded_rectangle((base_x + 16, height - 254, base_x + 66, height - 240), radius=6, fill=line)
+
+
+def _fallback_draw_lab_scene(scene, draw, palette, rnd):
+    width, height = scene.size
+    line = _fallback_hex_to_rgba(palette['line'], 42)
+    panel = _fallback_hex_to_rgba(palette['panel'], 214)
+    panel2 = _fallback_hex_to_rgba(palette['panel2'], 236)
+    accent = _fallback_hex_to_rgba(palette['accent'], 176)
+    accent2 = _fallback_hex_to_rgba(palette['accent2'], 162)
+
+    draw.ellipse((68, 160, 376, 468), fill=_fallback_hex_to_rgba(palette['accent'], 28))
+    draw.ellipse((122, 214, 322, 414), fill=panel)
+    draw.ellipse((182, 274, 262, 354), fill=accent2)
+    draw.rounded_rectangle((420, 110, width - 96, height - 120), radius=38, fill=panel)
+    draw.rounded_rectangle((472, 176, width - 140, 196), radius=10, fill=line)
+    draw.rounded_rectangle((472, 228, width - 214, 242), radius=7, fill=line)
+    draw.rounded_rectangle((472, 266, width - 246, 280), radius=7, fill=_fallback_hex_to_rgba(palette['accent'], 74))
+    draw.ellipse((540, 364, 812, 656), fill=_fallback_hex_to_rgba(palette['accent'], 34))
+    draw.ellipse((588, 408, 764, 620), fill=_fallback_hex_to_rgba(palette['accent2'], 28))
+    draw.rounded_rectangle((618, 662, 714, 682), radius=10, fill=line)
+
+
+def _fallback_draw_arena_scene(scene, draw, palette, rnd):
+    width, height = scene.size
+    line = _fallback_hex_to_rgba(palette['line'], 44)
+    panel = _fallback_hex_to_rgba(palette['panel'], 208)
+    panel2 = _fallback_hex_to_rgba(palette['panel2'], 234)
+    accent = _fallback_hex_to_rgba(palette['accent'], 182)
+    accent2 = _fallback_hex_to_rgba(palette['accent2'], 176)
+
+    draw.rounded_rectangle((78, 110, width - 78, height - 140), radius=42, fill=panel)
+    draw.rounded_rectangle((112, 146, width - 112, height - 176), radius=30, fill=panel2)
+    draw.rounded_rectangle((152, 182, width - 152, height - 218), radius=28, outline=line, width=4)
+    draw.line((width // 2, 182, width // 2, height - 218), fill=line, width=4)
+    draw.ellipse((width * 0.42, height * 0.38, width * 0.58, height * 0.54), outline=line, width=4)
+    draw.arc((width - 284, 182, width - 124, 322), start=214, end=30, fill=accent, width=16)
+    draw.line((182, height - 202, width - 176, 240), fill=accent2, width=12)
+    for point in [(182, height - 202), (402, height - 168), (604, 322), (width - 176, 240)]:
+        draw.ellipse((point[0] - 12, point[1] - 12, point[0] + 12, point[1] + 12), fill=accent)
+
+
+def _fallback_draw_studio_scene(scene, draw, palette, rnd):
+    width, height = scene.size
+    line = _fallback_hex_to_rgba(palette['line'], 42)
+    panel = _fallback_hex_to_rgba(palette['panel'], 220)
+    panel2 = _fallback_hex_to_rgba(palette['panel2'], 236)
+
+    draw.rounded_rectangle((126, 124, width - 126, height - 180), radius=38, fill=panel)
+    draw.rounded_rectangle((198, 182, width - 198, 256), radius=24, fill=line)
+    draw.rounded_rectangle((198, 308, width - 244, 382), radius=24, fill=_fallback_hex_to_rgba(palette['accent'], 52))
+    draw.rounded_rectangle((198, 438, width - 356, 512), radius=24, fill=_fallback_hex_to_rgba(palette['accent2'], 46))
+    draw.ellipse((286, 216, 430, 360), fill=_fallback_hex_to_rgba(palette['accent'], 36))
+    draw.ellipse((width - 356, height - 330, width - 148, height - 122), fill=_fallback_hex_to_rgba(palette['accent2'], 28))
+
+
+def _fallback_generate_scene_image(topic, slide_type, palette, size, seed):
+    scene = _fallback_gradient_canvas(size, palette['bg1'], palette['bg0'], palette['bg2']).convert('RGBA')
+    rnd = random.Random(seed)
+    draw = ImageDraw.Draw(scene)
+    _fallback_add_glow(scene, (int(size[0] * 0.82), int(size[1] * 0.18)), int(size[0] * 0.18), palette['accent'], alpha=62, blur=54)
+    _fallback_add_glow(scene, (int(size[0] * 0.18), int(size[1] * 0.82)), int(size[0] * 0.16), palette['accent2'], alpha=42, blur=48)
+
+    family = _fallback_scene_family(topic)
+    if family == 'workspace':
+        _fallback_draw_workspace_scene(scene, draw, palette, rnd, topic)
+    elif family == 'interior':
+        _fallback_draw_interior_scene(scene, draw, palette, rnd, topic)
+    elif family == 'operations':
+        _fallback_draw_operations_scene(scene, draw, palette, rnd, topic)
+    elif family == 'lab':
+        _fallback_draw_lab_scene(scene, draw, palette, rnd)
+    elif family == 'arena':
+        _fallback_draw_arena_scene(scene, draw, palette, rnd)
+    else:
+        _fallback_draw_studio_scene(scene, draw, palette, rnd)
+
+    return _fallback_add_scene_finish(scene, palette)
+
+
+def _fallback_build_editorial_illustration(topic, slide_type, palette, seed):
+    canvas = _fallback_gradient_canvas((1024, 1024), palette['bg1'], palette['bg0'], palette['bg2']).convert('RGBA')
+    draw = ImageDraw.Draw(canvas)
+    border_color = _fallback_hex_to_rgba(palette['line'], 60)
+    line_color = _fallback_hex_to_rgba(palette['line'], 86)
+    accent = _fallback_hex_to_rgba(palette['accent'], 188)
+    accent2 = _fallback_hex_to_rgba(palette['accent2'], 180)
+    panel_fill = _fallback_hex_to_rgba(palette['panel'], 160)
+
+    _fallback_add_glow(canvas, (790, 212), 218, palette['accent'], alpha=76, blur=84)
+    _fallback_add_glow(canvas, (184, 832), 196, palette['accent2'], alpha=48, blur=72)
+    draw.rounded_rectangle((26, 26, 998, 998), radius=58, outline=border_color, width=2)
+    draw.line((126, 112, 772, 112), fill=line_color, width=3)
+    draw.ellipse((82, 96, 96, 110), fill=accent)
+    draw.ellipse((108, 100, 116, 108), fill=_fallback_hex_to_rgba(palette['line'], 108))
+    draw.ellipse((126, 100, 134, 108), fill=_fallback_hex_to_rgba(palette['line'], 62))
+
+    def make_scene_card(card_size, card_seed):
+        scene_image = _fallback_generate_scene_image(topic, slide_type, palette, (1024, 1024), card_seed)
+        scene_image = _fallback_resize_cover(scene_image, card_size, focus_x=0.5, focus_y=0.5)
+        return _fallback_round_image(scene_image, radius=36, border=border_color)
+
+    if slide_type == 'how_it_works':
+        positions = [(82, 286), (362, 142), (642, 286)]
+        centers = []
+        for idx, pos in enumerate(positions):
+            card = make_scene_card((240, 324), seed + idx * 13 + 5)
+            _fallback_paste_card(canvas, card, pos, shadow_alpha=34, shadow_offset=(0, 10))
+            centers.append((pos[0] + 120, pos[1] + 162))
+        draw.line((centers[0][0] + 82, centers[0][1], centers[1][0] - 82, centers[1][1]), fill=accent, width=8)
+        draw.line((centers[1][0] + 82, centers[1][1], centers[2][0] - 82, centers[2][1]), fill=accent2, width=8)
+        for cx, cy in centers:
+            draw.ellipse((cx - 14, cy - 14, cx + 14, cy + 14), fill=panel_fill, outline=accent, width=3)
+        draw.rounded_rectangle((104, 738, 922, 828), radius=28, fill=panel_fill)
+        draw.rounded_rectangle((136, 774, 742, 786), radius=6, fill=line_color)
+        draw.rounded_rectangle((136, 804, 656, 814), radius=5, fill=_fallback_hex_to_rgba(palette['accent'], 104))
+    elif slide_type in {'impact', 'proof'}:
+        stripe_specs = [
+            (116, 140, 208, 612, 7),
+            (404, 112, 220, 670, 19),
+            (700, 168, 192, 558, 31),
+        ]
+        trend_points = []
+        for x, y, w, h, offset in stripe_specs:
+            card = make_scene_card((w, h), seed + offset)
+            _fallback_paste_card(canvas, card, (x, y), shadow_alpha=30, shadow_offset=(0, 10))
+            trend_points.append((x + w // 2, y + h - 76 - (offset % 5) * 18))
+        draw.line(trend_points, fill=accent, width=8)
+        for point in trend_points:
+            draw.ellipse((point[0] - 13, point[1] - 13, point[0] + 13, point[1] + 13), fill=accent2)
+        draw.rounded_rectangle((750, 786, 914, 848), radius=26, fill=panel_fill)
+        draw.rounded_rectangle((788, 812, 876, 822), radius=5, fill=line_color)
+    elif slide_type in {'solution', 'business_model'}:
+        main_card = make_scene_card((540, 430), seed + 3)
+        support_left = make_scene_card((220, 238), seed + 11)
+        support_right = make_scene_card((220, 238), seed + 17)
+        _fallback_paste_card(canvas, main_card, (242, 152), shadow_alpha=44)
+        _fallback_paste_card(canvas, support_left, (84, 622), shadow_alpha=32, shadow_offset=(0, 10))
+        _fallback_paste_card(canvas, support_right, (720, 622), shadow_alpha=32, shadow_offset=(0, 10))
+        draw.line((246, 618, 352, 502), fill=accent, width=7)
+        draw.line((778, 618, 672, 502), fill=accent2, width=7)
+        for point in [(246, 618), (352, 502), (672, 502), (778, 618)]:
+            draw.ellipse((point[0] - 12, point[1] - 12, point[0] + 12, point[1] + 12), fill=panel_fill, outline=accent, width=3)
+    else:
+        hero_card = make_scene_card((760, 650), seed + 9)
+        _fallback_paste_card(canvas, hero_card, (132, 188), shadow_alpha=46)
+        draw.rounded_rectangle((102, 140, 246, 192), radius=24, fill=panel_fill)
+        draw.ellipse((128, 160, 142, 174), fill=accent)
+        draw.rounded_rectangle((736, 808, 920, 868), radius=28, fill=panel_fill)
+        draw.rounded_rectangle((772, 834, 886, 844), radius=5, fill=line_color)
+
+    return canvas.convert('RGB')
+
+
 def _fallback_generate_vector_image_meta(idea, slide, index, image_options=None, hosted_error=''):
     slide = slide or {}
     style_key = _fallback_clean_text((image_options or {}).get('style'), 'deck-illustration').lower()
     palette = _fallback_image_palette(style_key)
     slide_type = _fallback_clean_text(slide.get('type'), 'story').lower()
     seed = _fallback_hash_seed(idea, slide.get('title'), slide.get('subtitle'), slide_type, style_key, index)
-    rnd = random.Random(seed)
     suggestion = _fallback_clean_text(slide.get('visual_suggestion'), slide.get('title') or 'Concept illustration')
     topic = _fallback_topic_bucket(idea, slide)
-    scenic_layers = _fallback_scene_layers(slide_type, palette, rnd)
-    subject_layers = _fallback_subject_layers(topic, palette, rnd)
-    svg_markup = f"""
-    <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
-      <defs>
-        <linearGradient id="bg" x1="120" y1="40" x2="900" y2="980" gradientUnits="userSpaceOnUse">
-          <stop stop-color="{palette['bg1']}"/>
-          <stop offset="0.55" stop-color="{palette['bg0']}"/>
-          <stop offset="1" stop-color="{palette['bg2']}"/>
-        </linearGradient>
-        <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(770 240) rotate(90) scale(280)">
-          <stop stop-color="{palette['accent']}" stop-opacity="0.32"/>
-          <stop offset="1" stop-color="{palette['accent']}" stop-opacity="0"/>
-        </radialGradient>
-      </defs>
-      <rect width="1024" height="1024" rx="64" fill="url(#bg)"/>
-      <rect x="36" y="36" width="952" height="952" rx="46" fill="none" stroke="{palette['line']}" opacity="0.12"/>
-      <circle cx="770" cy="240" r="280" fill="url(#glow)"/>
-      {scenic_layers}
-      {subject_layers}
-      <circle cx="154" cy="150" r="8" fill="{palette['accent']}" opacity="0.84"/>
-      <circle cx="182" cy="150" r="4" fill="{palette['line']}" opacity="0.42"/>
-      <circle cx="204" cy="150" r="4" fill="{palette['line']}" opacity="0.22"/>
-    </svg>
-    """.strip()
+    illustration = _fallback_build_editorial_illustration(topic, slide_type, palette, seed)
 
     return {
-        'image_url': _fallback_svg_data_url(svg_markup),
+        'image_url': _fallback_image_to_data_url(illustration, fmt='JPEG', quality=92),
         'image_prompt': suggestion,
         'image_model': FALLBACK_VECTOR_MODEL_LABEL,
-        'image_repo_id': 'builtin/ventureos-vector-scenes',
+        'image_repo_id': 'builtin/ventureos-editorial-scenes',
         'image_status': 'generated',
         'image_error': hosted_error,
     }
@@ -709,41 +1358,53 @@ def _fallback_enrich_slides_with_images(idea, slides, market_research=None, mode
     enriched = []
     selected_indices = sorted(_fallback_select_image_slide_indices(slides, image_options))
     selected_set = set(selected_indices)
-    anchor_meta = None
+    lead_meta = None
 
     if selected_indices:
-        anchor_index = selected_indices[0]
-        anchor_slide = dict((slides or [])[anchor_index] or {})
-        anchor_meta = _fallback_generate_slide_image_meta(
+        lead_index = selected_indices[0]
+        lead_slide = dict((slides or [])[lead_index] or {})
+        lead_meta = _fallback_generate_slide_image_meta(
             idea=idea,
-            slide=anchor_slide,
-            index=anchor_index,
+            slide=lead_slide,
+            index=lead_index,
             image_options=image_options,
         )
 
     for index, slide in enumerate(slides or []):
         item = dict(slide or {})
         if index in selected_set:
-            if anchor_meta and index == selected_indices[0]:
-                item.update(anchor_meta)
-            elif anchor_meta and (anchor_meta.get('image_model') == FALLBACK_IMAGE_MODEL_LABEL):
-                try:
-                    item.update(_fallback_derive_image_meta(anchor_meta, item, index))
-                except Exception as exc:
+            if lead_meta and index == selected_indices[0]:
+                item.update(lead_meta)
+            else:
+                use_derived_layout = bool(
+                    lead_meta
+                    and lead_meta.get('image_model') == FALLBACK_IMAGE_MODEL_LABEL
+                    and lead_meta.get('image_url')
+                )
+                if use_derived_layout:
+                    try:
+                        item.update(_fallback_derive_image_meta(
+                            lead_meta,
+                            item,
+                            index,
+                            image_options=image_options,
+                        ))
+                    except Exception:
+                        item.update(_fallback_generate_vector_image_meta(
+                            idea=idea,
+                            slide=item,
+                            index=index,
+                            image_options=image_options,
+                            hosted_error='Hosted lead image remix failed, so VentureOS used a slide-specific illustration.',
+                        ))
+                else:
                     item.update(_fallback_generate_vector_image_meta(
                         idea=idea,
                         slide=item,
                         index=index,
                         image_options=image_options,
-                        hosted_error=str(exc),
+                        hosted_error='Using slide-specific illustration because no strong lead image was available.',
                     ))
-            else:
-                item.update(_fallback_generate_slide_image_meta(
-                    idea=idea,
-                    slide=item,
-                    index=index,
-                    image_options=image_options,
-                ))
         else:
             item.setdefault('image_status', 'skipped')
         enriched.append(item)
