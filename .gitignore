@@ -10,3 +10,7 @@ dist/
 build/
 reports/
 *.log
+static/generated/slide_images/*.png
+.model-cache/
+
+.vercel

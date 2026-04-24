@@ -5,5 +5,11 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
+      - key: GOOGLE_API_KEY
+        sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: VENTUREOS_LLM_PROVIDER
+        value: google
+      - key: VENTUREOS_DISABLE_IMAGEGEN
+        value: "true"

@@ -1,0 +1,9 @@
+-r requirements.txt
+torch
+torchvision
+torchaudio
+transformers
+accelerate
+diffusers
+huggingface-hub
+safetensors

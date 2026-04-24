@@ -10,7 +10,7 @@ VentureOS is an autonomous startup analysis platform built for the **Google Buil
 
 > _[Insert demo link here]_
 
-**Live URL:** _[Insert deployment URL here]_
+**Live URL:** [https://ventureos-yogvid.vercel.app](https://ventureos-yogvid.vercel.app)
 
 ---
 
@@ -119,7 +119,7 @@ Takes the idea, market data, competitor landscape, and scorecard weaknesses and 
 
 | Layer | Technology |
 |-------|-----------|
-| **LLM** | Groq API — LLaMA 3.3-70b-versatile via LangChain |
+| **LLM** | Gemini 2.5 Flash Lite by default, with Groq fallback via LangChain |
 | **Agent Framework** | LangChain (`ChatPromptTemplate`, `HumanMessage`, `SystemMessage`) |
 | **Backend** | Flask (Python 3.9+) with `stream_with_context` |
 | **Streaming** | Server-Sent Events (`text/event-stream`) |
@@ -128,7 +128,7 @@ Takes the idea, market data, competitor landscape, and scorecard weaknesses and 
 | **Voice Input** | Web Speech API |
 | **Persistence** | `localStorage` for idea history |
 | **Export** | `window.print()` for PDF, Blob API for CSV download |
-| **Deployment** | Google Cloud |
+| **Deployment** | Vercel production deploy, Render-compatible config included |
 
 ---
 
@@ -152,6 +152,9 @@ source venv/bin/activate  # Windows: venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
+# Optional: local image generation models for slide visuals
+pip install -r requirements-imagegen.txt
+
 # 4. Configure environment variables
 cp .env.example .env
 # Fill in your API key inside .env
@@ -173,7 +176,8 @@ langchain
 langchain-google-genai
 ```
 
-Full list in `requirements.txt`.
+Core web dependencies live in `requirements.txt`.
+Local slide image generation extras live in `requirements-imagegen.txt`.
 
 ---
 

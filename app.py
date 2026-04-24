@@ -9,32 +9,812 @@ import re
 import uuid
 import io
 import random
+import tempfile
+import base64
+import html
+import threading
+from io import BytesIO
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+from PIL import Image, ImageEnhance, ImageFilter
 
 load_dotenv()
 
 
+IMAGE_GENERATION_DISABLED = os.getenv(
+    'VENTUREOS_DISABLE_IMAGEGEN', ''
+).strip().lower() in {'1', 'true', 'yes', 'on'}
+IMAGE_GENERATION_AVAILABLE = True
+IMAGE_GENERATION_IMPORT_ERROR = 'Using built-in illustrated slide visuals for this deployment.'
+IMAGE_GENERATION_IS_FALLBACK = True
+FALLBACK_IMAGE_MODEL_KEY = 'flux-studio'
+FALLBACK_IMAGE_MODEL_LABEL = 'Flux Studio'
+FALLBACK_VECTOR_MODEL_LABEL = 'Editorial Illustration'
+HOSTED_FALLBACK_TIMEOUT_SECONDS = float(os.getenv('VENTUREOS_HOSTED_IMAGE_TIMEOUT_SECONDS', '45'))
+HOSTED_FALLBACK_ENABLED = os.getenv(
+    'VENTUREOS_HOSTED_IMAGE_ENABLED', 'true'
+).strip().lower() not in {'0', 'false', 'no', 'off'}
+_HOSTED_IMAGE_CACHE = {}
+_HOSTED_IMAGE_CACHE_LOCK = threading.Lock()
+
+
+def _fallback_supported_models():
+    return [{
+        'key': FALLBACK_IMAGE_MODEL_KEY,
+        'repo_id': 'pollinations/flux',
+        'label': FALLBACK_IMAGE_MODEL_LABEL,
+    }]
+
+
+def _fallback_style_options():
+    return [
+        {'key': 'deck-illustration', 'label': 'Presentation Illustration'},
+        {'key': 'animated-scene', 'label': 'Animated Scene'},
+        {'key': 'cartoon', 'label': 'Cartoon'},
+        {'key': 'abstract', 'label': 'Abstract Scenic'},
+    ]
+
+
+def _fallback_coverage_options():
+    return [
+        {'key': 'hero-only', 'label': 'Hero Only (Fast)'},
+        {'key': 'key-slides', 'label': 'Key Slides'},
+        {'key': 'image-heavy', 'label': 'Image Heavy'},
+        {'key': 'all', 'label': 'Every Slide'},
+    ]
+
+
+def _fallback_clean_text(value, fallback=''):
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    return text or fallback
+
+
+def _fallback_hash_seed(*parts):
+    joined = '|'.join(_fallback_clean_text(part) for part in parts)
+    total = 0
+    for index, char in enumerate(joined):
+        total += (index + 1) * ord(char)
+    return total or 1
+
+
+def _fallback_image_palette(style_key):
+    palettes = {
+        'deck-illustration': {
+            'bg0': '#0B1020', 'bg1': '#1A2540', 'bg2': '#25355A',
+            'accent': '#7DD3FC', 'accent2': '#F472B6', 'line': '#D8E6FF',
+            'panel': '#14203A', 'panel2': '#1C2B4A'
+        },
+        'animated-scene': {
+            'bg0': '#0D1326', 'bg1': '#1E2A52', 'bg2': '#2F3F77',
+            'accent': '#60A5FA', 'accent2': '#A78BFA', 'line': '#E6F0FF',
+            'panel': '#18254A', 'panel2': '#233463'
+        },
+        'cartoon': {
+            'bg0': '#101827', 'bg1': '#22415F', 'bg2': '#395B7A',
+            'accent': '#F59E0B', 'accent2': '#FB7185', 'line': '#FFF7ED',
+            'panel': '#17314A', 'panel2': '#21415F'
+        },
+        'abstract': {
+            'bg0': '#111827', 'bg1': '#1F2937', 'bg2': '#374151',
+            'accent': '#34D399', 'accent2': '#60A5FA', 'line': '#ECFEFF',
+            'panel': '#172033', 'panel2': '#24314D'
+        },
+    }
+    return palettes.get(style_key) or palettes['deck-illustration']
+
+
+def _fallback_select_image_slide_indices(slides, image_options):
+    slides = slides or []
+    if not slides:
+        return set()
+
+    coverage = _fallback_clean_text((image_options or {}).get('coverage'), 'key-slides').lower()
+    type_lookup = {}
+    for index, slide in enumerate(slides):
+        slide_type = _fallback_clean_text((slide or {}).get('type')).lower()
+        if slide_type and slide_type not in type_lookup:
+            type_lookup[slide_type] = index
+
+    key_order = [
+        type_lookup.get('hook', 0),
+        type_lookup.get('problem', 1 if len(slides) > 1 else 0),
+        type_lookup.get('solution', min(3, len(slides) - 1)),
+        type_lookup.get('how_it_works', min(4, len(slides) - 1)),
+        type_lookup.get('impact', min(5, len(slides) - 1)),
+        type_lookup.get('proof', min(6, len(slides) - 1)),
+        type_lookup.get('vision', min(len(slides) - 2, len(slides) - 1)),
+        type_lookup.get('call_to_action', len(slides) - 1),
+    ]
+
+    ordered = []
+    seen = set()
+    for index in key_order:
+        if index is None:
+            continue
+        safe_index = max(0, min(len(slides) - 1, index))
+        if safe_index not in seen:
+            seen.add(safe_index)
+            ordered.append(safe_index)
+
+    if coverage == 'all':
+        return set(range(len(slides)))
+    if coverage == 'image-heavy':
+        return set(range(min(len(slides), max(7, len(ordered)))))
+    if coverage == 'key-slides':
+        return set(ordered[:5])
+    return set(ordered[:2] or [0])
+
+
+def _fallback_svg_data_url(svg_markup):
+    encoded = base64.b64encode(svg_markup.encode('utf-8')).decode('ascii')
+    return f'data:image/svg+xml;base64,{encoded}'
+
+
+def _fallback_binary_data_url(binary_data, mime_type):
+    encoded = base64.b64encode(binary_data).decode('ascii')
+    return f'data:{mime_type};base64,{encoded}'
+
+
+def _fallback_topic_bucket(idea, slide):
+    slide = slide or {}
+    corpus = ' '.join([
+        _fallback_clean_text(idea),
+        _fallback_clean_text(slide.get('title')),
+        _fallback_clean_text(slide.get('subtitle')),
+        _fallback_clean_text(slide.get('visual_suggestion')),
+        _fallback_clean_text(slide.get('objective')),
+    ]).lower()
+
+    buckets = [
+        ('gaming', ['game', 'gaming', 'indie', 'developer', 'studio', 'creator', 'player', 'stream']),
+        ('restaurant', ['restaurant', 'kitchen', 'food', 'menu', 'inventory', 'dining', 'hospitality', 'grocery']),
+        ('housing', ['housing', 'sublease', 'rent', 'rental', 'apartment', 'student housing', 'property', 'real estate']),
+        ('health', ['health', 'medical', 'patient', 'clinic', 'biotech', 'dermatitis', 'care', 'diagnostic']),
+        ('sports', ['sports', 'football', 'nfl', 'team', 'season', 'stadium', 'league']),
+        ('finance', ['finance', 'fintech', 'payment', 'billing', 'revenue', 'bank', 'credit', 'insurance']),
+        ('education', ['education', 'learning', 'student', 'school', 'college', 'course', 'training']),
+        ('logistics', ['logistics', 'warehouse', 'supply', 'shipping', 'delivery', 'fleet', 'procurement']),
+        ('software', ['ai', 'agent', 'software', 'saas', 'platform', 'automation', 'analytics', 'dashboard']),
+    ]
+
+    best_bucket = 'generic'
+    best_score = 0
+    for bucket, keywords in buckets:
+        score = sum(1 for keyword in keywords if keyword in corpus)
+        if score > best_score:
+            best_bucket = bucket
+            best_score = score
+    return best_bucket
+
+
+def _fallback_topic_subject(topic):
+    subjects = {
+        'gaming': 'indie game creator studio, premium collectibles, glowing dev setup, atmospheric shelves, cinematic environment art',
+        'restaurant': 'refined restaurant operations scene, chef pass, inventory shelves, premium hospitality workspace, cinematic still life',
+        'housing': 'student housing search environment, elevated apartment interiors, urban architecture, leasing journey concept art',
+        'health': 'premium healthcare concept scene, diagnostic workspace, medical lab environment, thoughtful editorial composition',
+        'sports': 'dramatic sports operations environment, strategy room, stadium energy, premium athletic editorial scene',
+        'finance': 'premium fintech operations scene, sophisticated financial workspace, screens and objects, editorial mood',
+        'education': 'modern learning studio, thoughtful academic environment, premium educational editorial scene',
+        'logistics': 'warehouse command center, supply chain operations environment, premium industrial editorial scene',
+        'software': 'product strategy workspace, premium startup studio, modern software operations environment',
+        'generic': 'premium editorial concept art scene for a startup pitch deck, atmospheric and polished',
+    }
+    return subjects.get(topic, subjects['generic'])
+
+
+def _fallback_style_prompt(style_key):
+    prompts = {
+        'deck-illustration': 'premium editorial digital painting, polished concept art, cinematic lighting, richly detailed, textured, atmospheric, not flat vector art',
+        'animated-scene': 'animated feature-film still, premium stylized environment art, polished cinematic illustration, richly lit and detailed',
+        'cartoon': 'premium stylized cartoon illustration, clean shapes, rich lighting, modern animation poster quality, polished and detailed',
+        'abstract': 'atmospheric abstract scenic artwork, premium composition, elegant gradients, dramatic depth, high-end art direction',
+    }
+    return prompts.get(style_key, prompts['deck-illustration'])
+
+
+def _fallback_slide_direction(slide_type):
+    directions = {
+        'hook': 'one dominant hero subject, strong negative space, memorable cover composition',
+        'problem': 'show friction and tension through environment and objects, not infographic shapes',
+        'stakes': 'high-importance atmosphere, urgency and scale, premium visual storytelling',
+        'solution': 'organized and optimistic product-world scene, premium clarity and confidence',
+        'how_it_works': 'structured operational scene with layers and flow, premium system storytelling',
+        'impact': 'outcome-led editorial scene with proof-driven atmosphere, not charts or labels',
+        'proof': 'credible traction mood with refined objects, screens, and environment, no visible text',
+        'business_model': 'commercial scene with polished objects and transactional energy, premium still life',
+        'vision': 'aspirational future-state environment, elegant and premium',
+        'call_to_action': 'confident closing visual, polished and cinematic with decisive mood',
+    }
+    return directions.get(slide_type, 'premium editorial composition, strong focal hierarchy, visually rich but clean')
+
+
+def _fallback_hosted_image_prompt(idea, slide, style_key):
+    slide = slide or {}
+    topic = _fallback_topic_bucket(idea, slide)
+    title = _fallback_clean_text(slide.get('title'))
+    visual = _fallback_clean_text(slide.get('visual_suggestion'))
+    subtitle = _fallback_clean_text(slide.get('subtitle'))
+    slide_type = _fallback_clean_text(slide.get('type'), 'story').lower()
+
+    prompt_parts = [
+        _fallback_topic_subject(topic),
+        _fallback_style_prompt(style_key),
+        _fallback_slide_direction(slide_type),
+    ]
+    if title:
+        prompt_parts.append(f'theme inspired by "{title}"')
+    if visual:
+        prompt_parts.append(visual)
+    elif subtitle:
+        prompt_parts.append(subtitle)
+    if idea:
+        prompt_parts.append(f'for startup idea "{_fallback_clean_text(idea)[:120]}"')
+
+    prompt_parts.extend([
+        'square composition for a premium presentation image panel',
+        'no text, no letters, no words, no watermark, no logo, no captions, no readable UI text',
+        'screens and packaging should show only abstract light or graphic shapes',
+        'not an infographic, not a chart, not a dashboard screenshot',
+    ])
+    return ', '.join(part for part in prompt_parts if part)
+
+
+def _fallback_fetch_hosted_image_meta(idea, slide, index, image_options=None):
+    if not HOSTED_FALLBACK_ENABLED:
+        raise RuntimeError('Hosted fallback image generation is disabled')
+
+    slide = slide or {}
+    style_key = _fallback_clean_text((image_options or {}).get('style'), 'deck-illustration').lower()
+    seed = _fallback_hash_seed(idea, slide.get('title'), slide.get('subtitle'), slide.get('type'), style_key, index)
+    prompt = _fallback_hosted_image_prompt(idea, slide, style_key)
+    cache_key = f"{seed}|{prompt}"
+
+    with _HOSTED_IMAGE_CACHE_LOCK:
+        cached = _HOSTED_IMAGE_CACHE.get(cache_key)
+    if cached:
+        return {
+            'image_url': cached,
+            'image_prompt': prompt,
+            'image_model': FALLBACK_IMAGE_MODEL_LABEL,
+            'image_repo_id': 'pollinations/flux',
+            'image_status': 'cached',
+        }
+
+    request_url = (
+        'https://image.pollinations.ai/prompt/'
+        f'{quote(prompt)}?width=1024&height=1024&seed={seed}&model=flux&nologo=true&safe=true'
+    )
+    request = Request(
+        request_url,
+        headers={
+            'User-Agent': 'VentureOS/1.0',
+            'Accept': 'image/*',
+        }
+    )
+    with urlopen(request, timeout=HOSTED_FALLBACK_TIMEOUT_SECONDS) as response:
+        mime_type = response.headers.get_content_type() or 'image/jpeg'
+        if not mime_type.startswith('image/'):
+            raise RuntimeError(f'Unexpected hosted image response type: {mime_type}')
+        binary_data = response.read()
+        if len(binary_data) < 4096:
+            raise RuntimeError('Hosted image response was unexpectedly small')
+
+    data_url = _fallback_binary_data_url(binary_data, mime_type)
+    with _HOSTED_IMAGE_CACHE_LOCK:
+        _HOSTED_IMAGE_CACHE[cache_key] = data_url
+
+    return {
+        'image_url': data_url,
+        'image_prompt': prompt,
+        'image_model': FALLBACK_IMAGE_MODEL_LABEL,
+        'image_repo_id': 'pollinations/flux',
+        'image_status': 'generated',
+    }
+
+
+def _fallback_image_from_data_url(data_url):
+    if not data_url or ',' not in data_url:
+        raise ValueError('Invalid image data URL')
+    header, raw = data_url.split(',', 1)
+    if ';base64' not in header:
+        raise ValueError('Unsupported data URL encoding')
+    return Image.open(BytesIO(base64.b64decode(raw))).convert('RGB')
+
+
+def _fallback_image_to_data_url(image, fmt='JPEG', quality=90):
+    buffer = BytesIO()
+    save_format = 'JPEG' if fmt.upper() == 'JPEG' else 'PNG'
+    save_kwargs = {'format': save_format}
+    mime = 'image/jpeg' if save_format == 'JPEG' else 'image/png'
+    if save_format == 'JPEG':
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        save_kwargs.update({'quality': quality, 'optimize': True, 'progressive': True})
+    image.save(buffer, **save_kwargs)
+    return _fallback_binary_data_url(buffer.getvalue(), mime)
+
+
+def _fallback_variant_recipe(slide_type, index):
+    slide_type = _fallback_clean_text(slide_type, 'story').lower()
+    recipes = {
+        'hook': {'crop': (0.0, 0.0, 1.0, 1.0), 'brightness': 1.0, 'contrast': 1.05, 'color': 1.0, 'blur': 0.0, 'sharpness': 1.05, 'overlay': None, 'mirror': False},
+        'problem': {'crop': (0.0, 0.12, 0.70, 0.94), 'brightness': 0.72, 'contrast': 1.18, 'color': 0.70, 'blur': 0.5, 'sharpness': 0.95, 'overlay': ('#291626', 86), 'mirror': False},
+        'stakes': {'crop': (0.18, 0.0, 0.96, 0.74), 'brightness': 0.86, 'contrast': 1.22, 'color': 0.88, 'blur': 0.0, 'sharpness': 1.08, 'overlay': ('#1E223C', 62), 'mirror': True},
+        'solution': {'crop': (0.30, 0.02, 0.98, 0.82), 'brightness': 1.08, 'contrast': 1.12, 'color': 1.10, 'blur': 0.0, 'sharpness': 1.10, 'overlay': ('#10253C', 24), 'mirror': False},
+        'how_it_works': {'crop': (0.18, 0.18, 0.86, 0.98), 'brightness': 0.96, 'contrast': 1.22, 'color': 0.94, 'blur': 0.0, 'sharpness': 1.14, 'overlay': ('#12233B', 44), 'mirror': True},
+        'impact': {'crop': (0.10, 0.22, 0.94, 1.0), 'brightness': 1.00, 'contrast': 1.20, 'color': 1.00, 'blur': 0.0, 'sharpness': 1.12, 'overlay': ('#182745', 28), 'mirror': False},
+        'proof': {'crop': (0.24, 0.10, 1.0, 0.86), 'brightness': 0.90, 'contrast': 1.28, 'color': 0.92, 'blur': 0.0, 'sharpness': 1.14, 'overlay': ('#1F2239', 44), 'mirror': True},
+        'business_model': {'crop': (0.08, 0.24, 0.88, 1.0), 'brightness': 0.98, 'contrast': 1.18, 'color': 0.92, 'blur': 0.0, 'sharpness': 1.08, 'overlay': ('#1A223F', 38), 'mirror': False},
+        'vision': {'crop': (0.04, 0.0, 1.0, 0.72), 'brightness': 1.10, 'contrast': 1.10, 'color': 1.12, 'blur': 0.0, 'sharpness': 1.10, 'overlay': ('#173055', 18), 'mirror': False},
+        'call_to_action': {'crop': (0.0, 0.06, 1.0, 0.80), 'brightness': 1.04, 'contrast': 1.14, 'color': 1.04, 'blur': 0.0, 'sharpness': 1.08, 'overlay': ('#2A1830', 20), 'mirror': True},
+    }
+    recipe = dict(recipes.get(slide_type, {'crop': (0.05, 0.05, 0.95, 0.95), 'brightness': 0.98, 'contrast': 1.12, 'color': 1.0, 'blur': 0.0, 'sharpness': 1.06, 'overlay': ('#18233F', 30), 'mirror': False}))
+    # Small deterministic crop drift so variants don't feel identical.
+    drift = ((index % 3) - 1) * 0.03
+    left, top, right, bottom = recipe['crop']
+    recipe['crop'] = (
+        max(0.0, min(0.18, left + drift)),
+        max(0.0, min(0.2, top + (drift * 0.5))),
+        min(1.0, max(0.82, right + drift)),
+        min(1.0, max(0.78, bottom + (drift * 0.4))),
+    )
+    return recipe
+
+
+def _fallback_apply_variant(image, slide, index):
+    slide_type = _fallback_clean_text((slide or {}).get('type'), 'story').lower()
+    recipe = _fallback_variant_recipe(slide_type, index)
+    width, height = image.size
+    left, top, right, bottom = recipe['crop']
+    crop_box = (
+        int(width * left),
+        int(height * top),
+        max(int(width * right), int(width * left) + 32),
+        max(int(height * bottom), int(height * top) + 32),
+    )
+    variant = image.crop(crop_box).resize((768, 768), Image.LANCZOS)
+
+    if recipe['blur'] > 0:
+        variant = variant.filter(ImageFilter.GaussianBlur(radius=recipe['blur']))
+    variant = ImageEnhance.Brightness(variant).enhance(recipe['brightness'])
+    variant = ImageEnhance.Contrast(variant).enhance(recipe['contrast'])
+    variant = ImageEnhance.Color(variant).enhance(recipe['color'])
+    variant = ImageEnhance.Sharpness(variant).enhance(recipe.get('sharpness', 1.0))
+    if recipe.get('mirror'):
+        variant = variant.transpose(Image.FLIP_LEFT_RIGHT)
+
+    overlay = recipe.get('overlay')
+    if overlay:
+        overlay_hex, alpha = overlay
+        overlay_rgb = tuple(int(overlay_hex[i:i+2], 16) for i in (1, 3, 5))
+        tint = Image.new('RGBA', variant.size, overlay_rgb + (alpha,))
+        variant = Image.alpha_composite(variant.convert('RGBA'), tint).convert('RGB')
+
+    return variant
+
+
+def _fallback_derive_image_meta(source_meta, slide, index):
+    source_image = _fallback_image_from_data_url(source_meta.get('image_url'))
+    variant = _fallback_apply_variant(source_image, slide, index)
+    return {
+        'image_url': _fallback_image_to_data_url(variant, fmt='JPEG', quality=90),
+        'image_prompt': source_meta.get('image_prompt') or _fallback_clean_text((slide or {}).get('visual_suggestion')),
+        'image_model': FALLBACK_IMAGE_MODEL_LABEL,
+        'image_repo_id': 'pollinations/flux-derived',
+        'image_status': 'derived',
+    }
+
+
+def _fallback_subject_layers(topic, palette, rnd):
+    accent = palette['accent']
+    accent2 = palette['accent2']
+    panel = palette['panel']
+    panel2 = palette['panel2']
+    line = palette['line']
+
+    if topic == 'gaming':
+        return f"""
+        <rect x="176" y="184" width="672" height="520" rx="44" fill="{panel}" opacity="0.84"/>
+        <rect x="214" y="222" width="596" height="356" rx="30" fill="{panel2}" opacity="0.96"/>
+        <rect x="252" y="262" width="212" height="14" rx="7" fill="{line}" opacity="0.16"/>
+        <rect x="252" y="298" width="168" height="12" rx="6" fill="{line}" opacity="0.10"/>
+        <path d="M296 470 C 360 402, 430 408, 500 336 S 642 270, 720 330" fill="none" stroke="{accent}" stroke-width="12" stroke-linecap="round" opacity="0.76"/>
+        <path d="M298 520 C 378 462, 456 474, 530 432 S 654 388, 734 436" fill="none" stroke="{accent2}" stroke-width="10" stroke-linecap="round" opacity="0.54"/>
+        <circle cx="538" cy="372" r="92" fill="{accent}" opacity="0.12"/>
+        <circle cx="632" cy="338" r="58" fill="{accent2}" opacity="0.16"/>
+        <rect x="438" y="602" width="148" height="20" rx="10" fill="{line}" opacity="0.14"/>
+        <rect x="476" y="622" width="72" height="90" rx="20" fill="{panel2}" opacity="0.94"/>
+        <path d="M624 654 C 604 622, 566 624, 548 648 L 534 678 C 524 700, 536 726, 560 734 L 596 748 C 620 754, 644 740, 652 716 L 666 688 C 676 664, 664 640, 642 632 Z" fill="{accent2}" opacity="0.34"/>
+        <circle cx="578" cy="688" r="18" fill="{panel}" opacity="0.78"/>
+        <circle cx="630" cy="680" r="14" fill="{panel}" opacity="0.78"/>
+        """
+
+    if topic == 'restaurant':
+        return f"""
+        <rect x="168" y="180" width="688" height="560" rx="46" fill="{panel}" opacity="0.84"/>
+        <rect x="218" y="228" width="588" height="464" rx="34" fill="{panel2}" opacity="0.92"/>
+        <rect x="258" y="300" width="508" height="16" rx="8" fill="{line}" opacity="0.18"/>
+        <rect x="258" y="436" width="508" height="16" rx="8" fill="{line}" opacity="0.18"/>
+        <rect x="258" y="572" width="508" height="16" rx="8" fill="{line}" opacity="0.18"/>
+        <rect x="292" y="248" width="92" height="108" rx="20" fill="{accent}" opacity="0.22"/>
+        <rect x="406" y="248" width="118" height="108" rx="20" fill="{panel}" opacity="0.76"/>
+        <rect x="548" y="248" width="72" height="108" rx="20" fill="{accent2}" opacity="0.22"/>
+        <rect x="644" y="248" width="74" height="108" rx="20" fill="{panel}" opacity="0.68"/>
+        <rect x="288" y="486" width="146" height="70" rx="18" fill="{panel}" opacity="0.82"/>
+        <rect x="454" y="486" width="104" height="70" rx="18" fill="{accent2}" opacity="0.24"/>
+        <rect x="582" y="484" width="150" height="150" rx="26" fill="{panel}" opacity="0.94"/>
+        <rect x="612" y="520" width="90" height="12" rx="6" fill="{line}" opacity="0.16"/>
+        <path d="M612 580 C 638 556, 660 556, 682 528" fill="none" stroke="{accent}" stroke-width="12" stroke-linecap="round" opacity="0.78"/>
+        <circle cx="682" cy="528" r="12" fill="{accent}" opacity="0.86"/>
+        """
+
+    if topic == 'housing':
+        return f"""
+        <rect x="200" y="278" width="206" height="420" rx="28" fill="{panel}" opacity="0.92"/>
+        <rect x="438" y="218" width="286" height="480" rx="34" fill="{panel2}" opacity="0.96"/>
+        <rect x="750" y="320" width="70" height="378" rx="24" fill="{panel}" opacity="0.64"/>
+        <path d="M548 150 C 578 108, 640 108, 670 150 C 670 202, 608 224, 608 272 C 608 224, 548 202, 548 150 Z" fill="{accent}" opacity="0.74"/>
+        <circle cx="608" cy="154" r="24" fill="{panel}" opacity="0.62"/>
+        <path d="M120 786 C 290 676, 414 706, 566 632 S 842 556, 1024 640" fill="none" stroke="{line}" stroke-width="10" opacity="0.18"/>
+        <rect x="238" y="326" width="48" height="58" rx="10" fill="{line}" opacity="0.12"/>
+        <rect x="320" y="326" width="48" height="58" rx="10" fill="{line}" opacity="0.12"/>
+        <rect x="238" y="420" width="48" height="58" rx="10" fill="{line}" opacity="0.12"/>
+        <rect x="320" y="420" width="48" height="58" rx="10" fill="{line}" opacity="0.12"/>
+        <rect x="238" y="514" width="48" height="58" rx="10" fill="{line}" opacity="0.12"/>
+        <rect x="320" y="514" width="48" height="58" rx="10" fill="{line}" opacity="0.12"/>
+        <rect x="484" y="280" width="58" height="70" rx="12" fill="{line}" opacity="0.12"/>
+        <rect x="580" y="280" width="58" height="70" rx="12" fill="{line}" opacity="0.12"/>
+        <rect x="484" y="392" width="58" height="70" rx="12" fill="{line}" opacity="0.12"/>
+        <rect x="580" y="392" width="58" height="70" rx="12" fill="{line}" opacity="0.12"/>
+        <rect x="484" y="504" width="58" height="70" rx="12" fill="{line}" opacity="0.12"/>
+        <rect x="580" y="504" width="58" height="70" rx="12" fill="{line}" opacity="0.12"/>
+        """
+
+    if topic == 'health':
+        return f"""
+        <circle cx="340" cy="404" r="148" fill="{accent}" opacity="0.16"/>
+        <circle cx="340" cy="404" r="102" fill="{panel}" opacity="0.88"/>
+        <circle cx="340" cy="404" r="36" fill="{accent2}" opacity="0.42"/>
+        <rect x="470" y="238" width="324" height="430" rx="38" fill="{panel}" opacity="0.94"/>
+        <rect x="512" y="290" width="112" height="18" rx="9" fill="{line}" opacity="0.14"/>
+        <rect x="512" y="336" width="226" height="14" rx="7" fill="{line}" opacity="0.12"/>
+        <rect x="512" y="370" width="196" height="14" rx="7" fill="{line}" opacity="0.12"/>
+        <path d="M560 560 C 560 496, 612 452, 612 392 C 612 344, 648 308, 696 308 C 744 308, 778 344, 778 392 C 778 452, 726 496, 726 560 Z" fill="{accent}" opacity="0.20"/>
+        <path d="M584 560 C 584 510, 622 470, 622 420 C 622 386, 650 360, 686 360 C 722 360, 750 386, 750 420 C 750 470, 788 510, 788 560 Z" fill="{accent2}" opacity="0.22"/>
+        <rect x="636" y="594" width="96" height="18" rx="9" fill="{line}" opacity="0.12"/>
+        """
+
+    if topic == 'finance':
+        return f"""
+        <rect x="188" y="208" width="648" height="468" rx="42" fill="{panel}" opacity="0.92"/>
+        <rect x="230" y="250" width="212" height="160" rx="28" fill="{panel2}" opacity="0.96"/>
+        <rect x="470" y="250" width="326" height="252" rx="30" fill="{panel2}" opacity="0.92"/>
+        <rect x="230" y="438" width="212" height="196" rx="28" fill="{accent2}" opacity="0.18"/>
+        <path d="M518 454 C 560 434, 610 428, 650 388 S 724 310, 768 290" fill="none" stroke="{accent}" stroke-width="12" stroke-linecap="round" opacity="0.84"/>
+        <circle cx="518" cy="454" r="12" fill="{accent2}" opacity="0.78"/>
+        <circle cx="650" cy="388" r="12" fill="{accent}" opacity="0.84"/>
+        <circle cx="768" cy="290" r="12" fill="{accent2}" opacity="0.78"/>
+        <rect x="272" y="294" width="128" height="20" rx="10" fill="{line}" opacity="0.18"/>
+        <rect x="272" y="336" width="84" height="14" rx="7" fill="{line}" opacity="0.12"/>
+        <circle cx="326" cy="542" r="56" fill="{accent}" opacity="0.24"/>
+        <path d="M326 506 L326 578" stroke="{line}" stroke-width="12" stroke-linecap="round" opacity="0.78"/>
+        <path d="M294 524 C 294 502, 358 502, 358 524 C 358 548, 294 548, 294 572 C 294 594, 358 594, 358 572" fill="none" stroke="{line}" stroke-width="10" stroke-linecap="round" opacity="0.72"/>
+        """
+
+    if topic == 'sports':
+        return f"""
+        <rect x="184" y="214" width="656" height="448" rx="42" fill="{panel}" opacity="0.90"/>
+        <rect x="216" y="246" width="592" height="384" rx="30" fill="{panel2}" opacity="0.94"/>
+        <rect x="250" y="278" width="524" height="320" rx="24" fill="none" stroke="{line}" stroke-width="4" opacity="0.16"/>
+        <line x1="512" y1="278" x2="512" y2="598" stroke="{line}" stroke-width="4" opacity="0.16"/>
+        <circle cx="512" cy="438" r="64" fill="none" stroke="{line}" stroke-width="4" opacity="0.16"/>
+        <path d="M672 314 C 702 300, 738 304, 760 332 C 782 360, 778 398, 750 420 C 722 442, 686 438, 664 410 C 642 382, 644 342, 672 314 Z" fill="{accent}" opacity="0.34"/>
+        <path d="M690 334 C 718 360, 734 390, 736 420" fill="none" stroke="{panel}" stroke-width="8" stroke-linecap="round" opacity="0.55"/>
+        <path d="M300 560 C 376 520, 448 512, 534 462 S 688 374, 746 328" fill="none" stroke="{accent2}" stroke-width="12" stroke-linecap="round" opacity="0.74"/>
+        """
+
+    if topic == 'education':
+        return f"""
+        <rect x="182" y="200" width="660" height="472" rx="44" fill="{panel}" opacity="0.90"/>
+        <rect x="226" y="244" width="614" height="264" rx="30" fill="{panel2}" opacity="0.94"/>
+        <rect x="270" y="292" width="280" height="18" rx="9" fill="{line}" opacity="0.16"/>
+        <rect x="270" y="334" width="190" height="14" rx="7" fill="{line}" opacity="0.10"/>
+        <rect x="270" y="530" width="188" height="104" rx="24" fill="{accent}" opacity="0.18"/>
+        <rect x="486" y="530" width="308" height="104" rx="24" fill="{panel2}" opacity="0.76"/>
+        <path d="M622 320 L734 374 L622 428 L510 374 Z" fill="{accent}" opacity="0.30"/>
+        <path d="M622 374 L622 470" stroke="{line}" stroke-width="8" stroke-linecap="round" opacity="0.54"/>
+        """
+
+    if topic == 'logistics':
+        return f"""
+        <rect x="180" y="196" width="664" height="488" rx="46" fill="{panel}" opacity="0.92"/>
+        <rect x="228" y="242" width="614" height="234" rx="32" fill="{panel2}" opacity="0.96"/>
+        <rect x="246" y="534" width="248" height="120" rx="26" fill="{panel2}" opacity="0.78"/>
+        <rect x="526" y="534" width="270" height="120" rx="26" fill="{accent}" opacity="0.16"/>
+        <rect x="286" y="292" width="114" height="72" rx="18" fill="{accent}" opacity="0.20"/>
+        <rect x="424" y="292" width="114" height="72" rx="18" fill="{accent2}" opacity="0.18"/>
+        <rect x="562" y="292" width="114" height="72" rx="18" fill="{panel}" opacity="0.78"/>
+        <path d="M290 594 L396 594" stroke="{line}" stroke-width="14" stroke-linecap="round" opacity="0.18"/>
+        <circle cx="318" cy="634" r="18" fill="{line}" opacity="0.24"/>
+        <circle cx="372" cy="634" r="18" fill="{line}" opacity="0.24"/>
+        <path d="M566 592 C 612 550, 670 560, 726 516" fill="none" stroke="{accent2}" stroke-width="12" stroke-linecap="round" opacity="0.74"/>
+        <circle cx="726" cy="516" r="12" fill="{accent}" opacity="0.82"/>
+        """
+
+    if topic == 'software':
+        return f"""
+        <rect x="182" y="186" width="660" height="520" rx="46" fill="{panel}" opacity="0.90"/>
+        <rect x="226" y="230" width="616" height="198" rx="30" fill="{panel2}" opacity="0.94"/>
+        <rect x="226" y="458" width="282" height="212" rx="30" fill="{panel2}" opacity="0.78"/>
+        <rect x="534" y="458" width="276" height="212" rx="30" fill="{accent}" opacity="0.14"/>
+        <rect x="266" y="280" width="240" height="16" rx="8" fill="{line}" opacity="0.16"/>
+        <rect x="266" y="318" width="182" height="12" rx="6" fill="{line}" opacity="0.10"/>
+        <circle cx="666" cy="322" r="92" fill="{accent}" opacity="0.12"/>
+        <circle cx="612" cy="552" r="16" fill="{accent2}" opacity="0.74"/>
+        <circle cx="676" cy="606" r="14" fill="{accent}" opacity="0.80"/>
+        <circle cx="752" cy="548" r="16" fill="{accent2}" opacity="0.74"/>
+        <path d="M612 552 C 642 526, 652 526, 676 606 S 718 612, 752 548" fill="none" stroke="{line}" stroke-width="8" stroke-linecap="round" opacity="0.38"/>
+        """
+
+    return f"""
+    <rect x="190" y="190" width="644" height="644" rx="48" fill="{panel}" opacity="0.88"/>
+    <rect x="236" y="236" width="552" height="552" rx="34" fill="{panel2}" opacity="0.84"/>
+    <path d="M190 656 C 316 566, 442 560, 548 470 S 742 330, 834 360" fill="none" stroke="{accent}" stroke-width="18" stroke-linecap="round" opacity="0.30"/>
+    <path d="M236 734 C 360 648, 474 652, 586 574 S 734 480, 788 504" fill="none" stroke="{accent2}" stroke-width="14" stroke-linecap="round" opacity="0.34"/>
+    <circle cx="{334 + rnd.randint(-36, 42)}" cy="{356 + rnd.randint(-28, 34)}" r="72" fill="{accent}" opacity="0.18"/>
+    <circle cx="{674 + rnd.randint(-44, 36)}" cy="{574 + rnd.randint(-34, 30)}" r="118" fill="{accent2}" opacity="0.16"/>
+    """
+
+
+def _fallback_scene_layers(slide_type, palette, rnd):
+    accent = palette['accent']
+    accent2 = palette['accent2']
+    panel = palette['panel']
+    panel2 = palette['panel2']
+    line = palette['line']
+
+    if slide_type in {'hook', 'vision', 'call_to_action'}:
+        return f"""
+        <circle cx="{770 + rnd.randint(-40, 70)}" cy="{235 + rnd.randint(-35, 55)}" r="{170 + rnd.randint(-20, 40)}" fill="{accent}" opacity="0.22"/>
+        <path d="M0 760 C 140 660, 260 695, 420 615 S 770 530, 1024 690 L1024 1024 L0 1024 Z" fill="{panel2}" opacity="0.92"/>
+        <path d="M0 830 C 180 730, 320 785, 500 700 S 820 640, 1024 760 L1024 1024 L0 1024 Z" fill="{panel}" opacity="0.98"/>
+        <path d="M160 690 L320 490 L470 690 Z" fill="{accent2}" opacity="0.25"/>
+        <path d="M470 710 L690 420 L890 710 Z" fill="{accent}" opacity="0.20"/>
+        <circle cx="{250 + rnd.randint(-80, 80)}" cy="{220 + rnd.randint(-50, 40)}" r="4" fill="{line}" opacity="0.75"/>
+        <circle cx="{340 + rnd.randint(-60, 60)}" cy="{170 + rnd.randint(-60, 30)}" r="3" fill="{line}" opacity="0.55"/>
+        <circle cx="{420 + rnd.randint(-40, 90)}" cy="{260 + rnd.randint(-50, 40)}" r="2.5" fill="{line}" opacity="0.48"/>
+        """
+
+    if slide_type in {'problem', 'stakes'}:
+        return f"""
+        <rect x="180" y="188" width="286" height="198" rx="30" fill="{panel2}" opacity="0.92" transform="rotate(-8 323 287)"/>
+        <rect x="548" y="224" width="290" height="210" rx="34" fill="{panel}" opacity="0.96" transform="rotate(7 693 329)"/>
+        <path d="M180 620 C 330 540, 450 700, 610 590 S 845 470, 930 565" fill="none" stroke="{accent2}" stroke-width="20" stroke-linecap="round" opacity="0.42"/>
+        <path d="M180 620 C 330 540, 450 700, 610 590 S 845 470, 930 565" fill="none" stroke="{line}" stroke-width="4" stroke-dasharray="12 14" stroke-linecap="round" opacity="0.56"/>
+        <circle cx="310" cy="314" r="42" fill="{accent}" opacity="0.24"/>
+        <circle cx="702" cy="323" r="34" fill="{accent2}" opacity="0.28"/>
+        """
+
+    if slide_type in {'solution', 'business_model'}:
+        return f"""
+        <rect x="190" y="180" width="646" height="430" rx="42" fill="{panel}" opacity="0.94"/>
+        <rect x="250" y="250" width="220" height="126" rx="28" fill="{panel2}" opacity="0.96"/>
+        <rect x="510" y="250" width="266" height="180" rx="30" fill="{panel2}" opacity="0.96"/>
+        <rect x="250" y="406" width="526" height="124" rx="26" fill="{panel2}" opacity="0.76"/>
+        <circle cx="316" cy="314" r="24" fill="{accent}" opacity="0.82"/>
+        <rect x="356" y="292" width="78" height="14" rx="7" fill="{line}" opacity="0.68"/>
+        <rect x="356" y="324" width="96" height="12" rx="6" fill="{line}" opacity="0.38"/>
+        <path d="M485 340 C 535 318, 565 318, 610 340" fill="none" stroke="{accent2}" stroke-width="10" stroke-linecap="round" opacity="0.52"/>
+        <circle cx="606" cy="338" r="18" fill="{accent2}" opacity="0.75"/>
+        <circle cx="686" cy="338" r="18" fill="{accent}" opacity="0.62"/>
+        <circle cx="646" cy="392" r="18" fill="{line}" opacity="0.44"/>
+        """
+
+    if slide_type in {'how_it_works'}:
+        return f"""
+        <circle cx="220" cy="515" r="96" fill="{accent}" opacity="0.24"/>
+        <circle cx="512" cy="362" r="112" fill="{accent2}" opacity="0.20"/>
+        <circle cx="806" cy="515" r="96" fill="{accent}" opacity="0.18"/>
+        <path d="M288 492 C 372 432, 430 432, 512 362 S 644 432, 736 492" fill="none" stroke="{line}" stroke-width="8" stroke-dasharray="14 14" opacity="0.62"/>
+        <rect x="156" y="446" width="128" height="138" rx="34" fill="{panel}" opacity="0.98"/>
+        <rect x="448" y="293" width="128" height="138" rx="34" fill="{panel2}" opacity="0.98"/>
+        <rect x="742" y="446" width="128" height="138" rx="34" fill="{panel}" opacity="0.98"/>
+        """
+
+    if slide_type in {'impact', 'proof'}:
+        return f"""
+        <rect x="158" y="238" width="708" height="430" rx="38" fill="{panel}" opacity="0.96"/>
+        <rect x="236" y="514" width="84" height="96" rx="20" fill="{accent}" opacity="0.74"/>
+        <rect x="370" y="430" width="84" height="180" rx="20" fill="{accent2}" opacity="0.68"/>
+        <rect x="504" y="346" width="84" height="264" rx="20" fill="{accent}" opacity="0.84"/>
+        <rect x="638" y="276" width="84" height="334" rx="20" fill="{line}" opacity="0.44"/>
+        <path d="M220 424 C 330 396, 372 438, 460 382 S 620 242, 722 264" fill="none" stroke="{line}" stroke-width="6" opacity="0.72"/>
+        <circle cx="220" cy="424" r="10" fill="{accent2}"/>
+        <circle cx="460" cy="382" r="10" fill="{accent}"/>
+        <circle cx="722" cy="264" r="10" fill="{accent2}"/>
+        """
+
+    return f"""
+    <circle cx="{278 + rnd.randint(-60, 60)}" cy="{284 + rnd.randint(-40, 40)}" r="124" fill="{accent}" opacity="0.20"/>
+    <circle cx="{760 + rnd.randint(-70, 60)}" cy="{608 + rnd.randint(-70, 50)}" r="164" fill="{accent2}" opacity="0.16"/>
+    <rect x="200" y="224" width="612" height="420" rx="42" fill="{panel}" opacity="0.95"/>
+    <rect x="270" y="292" width="474" height="56" rx="20" fill="{line}" opacity="0.14"/>
+    <rect x="270" y="386" width="390" height="56" rx="20" fill="{accent}" opacity="0.16"/>
+    <rect x="270" y="480" width="290" height="56" rx="20" fill="{accent2}" opacity="0.20"/>
+    """
+
+
+def _fallback_generate_vector_image_meta(idea, slide, index, image_options=None, hosted_error=''):
+    slide = slide or {}
+    style_key = _fallback_clean_text((image_options or {}).get('style'), 'deck-illustration').lower()
+    palette = _fallback_image_palette(style_key)
+    slide_type = _fallback_clean_text(slide.get('type'), 'story').lower()
+    seed = _fallback_hash_seed(idea, slide.get('title'), slide.get('subtitle'), slide_type, style_key, index)
+    rnd = random.Random(seed)
+    suggestion = _fallback_clean_text(slide.get('visual_suggestion'), slide.get('title') or 'Concept illustration')
+    topic = _fallback_topic_bucket(idea, slide)
+    scenic_layers = _fallback_scene_layers(slide_type, palette, rnd)
+    subject_layers = _fallback_subject_layers(topic, palette, rnd)
+    svg_markup = f"""
+    <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+      <defs>
+        <linearGradient id="bg" x1="120" y1="40" x2="900" y2="980" gradientUnits="userSpaceOnUse">
+          <stop stop-color="{palette['bg1']}"/>
+          <stop offset="0.55" stop-color="{palette['bg0']}"/>
+          <stop offset="1" stop-color="{palette['bg2']}"/>
+        </linearGradient>
+        <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(770 240) rotate(90) scale(280)">
+          <stop stop-color="{palette['accent']}" stop-opacity="0.32"/>
+          <stop offset="1" stop-color="{palette['accent']}" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="1024" height="1024" rx="64" fill="url(#bg)"/>
+      <rect x="36" y="36" width="952" height="952" rx="46" fill="none" stroke="{palette['line']}" opacity="0.12"/>
+      <circle cx="770" cy="240" r="280" fill="url(#glow)"/>
+      {scenic_layers}
+      {subject_layers}
+      <circle cx="154" cy="150" r="8" fill="{palette['accent']}" opacity="0.84"/>
+      <circle cx="182" cy="150" r="4" fill="{palette['line']}" opacity="0.42"/>
+      <circle cx="204" cy="150" r="4" fill="{palette['line']}" opacity="0.22"/>
+    </svg>
+    """.strip()
+
+    return {
+        'image_url': _fallback_svg_data_url(svg_markup),
+        'image_prompt': suggestion,
+        'image_model': FALLBACK_VECTOR_MODEL_LABEL,
+        'image_repo_id': 'builtin/ventureos-vector-scenes',
+        'image_status': 'generated',
+        'image_error': hosted_error,
+    }
+
+
+def _fallback_generate_slide_image_meta(idea, slide, index, image_options=None):
+    try:
+        return _fallback_fetch_hosted_image_meta(idea, slide, index, image_options=image_options)
+    except Exception as exc:
+        return _fallback_generate_vector_image_meta(
+            idea,
+            slide,
+            index,
+            image_options=image_options,
+            hosted_error=str(exc),
+        )
+
+
+def _fallback_enrich_slides_with_images(idea, slides, market_research=None, model_key=None, image_options=None):
+    enriched = []
+    selected_indices = sorted(_fallback_select_image_slide_indices(slides, image_options))
+    selected_set = set(selected_indices)
+    anchor_meta = None
+
+    if selected_indices:
+        anchor_index = selected_indices[0]
+        anchor_slide = dict((slides or [])[anchor_index] or {})
+        anchor_meta = _fallback_generate_slide_image_meta(
+            idea=idea,
+            slide=anchor_slide,
+            index=anchor_index,
+            image_options=image_options,
+        )
+
+    for index, slide in enumerate(slides or []):
+        item = dict(slide or {})
+        if index in selected_set:
+            if anchor_meta and index == selected_indices[0]:
+                item.update(anchor_meta)
+            elif anchor_meta and (anchor_meta.get('image_model') == FALLBACK_IMAGE_MODEL_LABEL):
+                try:
+                    item.update(_fallback_derive_image_meta(anchor_meta, item, index))
+                except Exception as exc:
+                    item.update(_fallback_generate_vector_image_meta(
+                        idea=idea,
+                        slide=item,
+                        index=index,
+                        image_options=image_options,
+                        hosted_error=str(exc),
+                    ))
+            else:
+                item.update(_fallback_generate_slide_image_meta(
+                    idea=idea,
+                    slide=item,
+                    index=index,
+                    image_options=image_options,
+                ))
+        else:
+            item.setdefault('image_status', 'skipped')
+        enriched.append(item)
+    return enriched
+
+
+DEFAULT_MODEL_KEY = os.getenv('VENTUREOS_IMAGE_MODEL', FALLBACK_IMAGE_MODEL_KEY).strip() or FALLBACK_IMAGE_MODEL_KEY
+enrich_slides_with_images = _fallback_enrich_slides_with_images
+get_image_coverage_options = _fallback_coverage_options
+get_image_style_options = _fallback_style_options
+get_supported_models = _fallback_supported_models
+
+if not IMAGE_GENERATION_DISABLED:
+    try:
+        from tools.image_generation import (
+            DEFAULT_MODEL_KEY as IMAGEGEN_DEFAULT_MODEL_KEY,
+            enrich_slides_with_images as imagegen_enrich_slides_with_images,
+            get_image_coverage_options as imagegen_get_image_coverage_options,
+            get_image_style_options as imagegen_get_image_style_options,
+            get_supported_models as imagegen_get_supported_models,
+        )
+        DEFAULT_MODEL_KEY = IMAGEGEN_DEFAULT_MODEL_KEY
+        enrich_slides_with_images = imagegen_enrich_slides_with_images
+        get_image_coverage_options = imagegen_get_image_coverage_options
+        get_image_style_options = imagegen_get_image_style_options
+        get_supported_models = imagegen_get_supported_models
+        IMAGE_GENERATION_AVAILABLE = True
+        IMAGE_GENERATION_IMPORT_ERROR = ''
+        IMAGE_GENERATION_IS_FALLBACK = False
+    except Exception as image_import_error:
+        IMAGE_GENERATION_IMPORT_ERROR = str(image_import_error)
+else:
+    IMAGE_GENERATION_IMPORT_ERROR = 'Using built-in illustrated slide visuals in this live deployment.'
+
+
 app = Flask(__name__)
 
-# Ensure reports directory exists
-REPORTS_DIR = os.path.join(os.path.dirname(__file__), 'reports')
-os.makedirs(REPORTS_DIR, exist_ok=True)
+
+def _resolve_reports_dir():
+    repo_reports_dir = os.path.join(os.path.dirname(__file__), 'reports')
+    if os.getenv('VERCEL'):
+        temp_reports_dir = os.path.join(tempfile.gettempdir(), 'ventureos-reports')
+        os.makedirs(temp_reports_dir, exist_ok=True)
+        return temp_reports_dir
+    try:
+        os.makedirs(repo_reports_dir, exist_ok=True)
+        return repo_reports_dir
+    except OSError:
+        temp_reports_dir = os.path.join(tempfile.gettempdir(), 'ventureos-reports')
+        os.makedirs(temp_reports_dir, exist_ok=True)
+        return temp_reports_dir
+
+
+REPORTS_DIR = _resolve_reports_dir()
 
 
 DECK_TEMPLATE_PRESETS = [
     {
         'template_id': 'editorial-midnight',
-        'theme_name': 'Editorial Midnight',
+        'theme_name': 'Scholar Noir',
         'palette': {
-            'primary': '#0B1020',
-            'secondary': '#182033',
-            'accent': '#7DD3FC',
-            'surface': '#121A2B',
-            'text': '#F8FAFC',
+            'primary': '#23262F',
+            'secondary': '#2E313B',
+            'accent': '#F4728A',
+            'surface': '#333745',
+            'text': '#F7EEF4',
         },
         'style_notes': [
-            'Editorial dark canvas with restrained accent contrast',
-            'Generous whitespace with left-aligned storytelling blocks',
-            'Premium investor tone with quiet cinematic glow',
+            'Dark academic-editorial canvas with rose-coral accent discipline',
+            'Split-layout storytelling with contextual illustration or chart panel',
+            'Feels like a premium research deck or polished conference talk',
         ]
     },
     {
@@ -295,6 +1075,15 @@ def _normalize_slide(raw_slide: dict, index: int) -> dict:
             or raw_slide.get('visual')
             or raw_slide.get('chart_suggestion')
         ),
+        'image_url': _clean_text(
+            raw_slide.get('image_url')
+            or raw_slide.get('visual_image_url')
+        ),
+        'image_prompt': _clean_text(raw_slide.get('image_prompt')),
+        'image_model': _clean_text(raw_slide.get('image_model')),
+        'image_repo_id': _clean_text(raw_slide.get('image_repo_id')),
+        'image_status': _clean_text(raw_slide.get('image_status')),
+        'image_error': _clean_text(raw_slide.get('image_error')),
         'design_notes': _clean_text(raw_slide.get('design_notes')),
         'animation_plan': {
             'entry': _clean_text(animation.get('entry'), 'Fade'),
@@ -386,6 +1175,148 @@ def _normalize_deck_payload(payload, idea: str, template_preset=None) -> dict:
         },
         'slides': slides,
     }
+
+
+def _build_local_deck_payload(idea: str, context: dict, template_preset=None) -> dict:
+    template_preset = template_preset or DEFAULT_DECK_THEME
+    context = context or {}
+    market = context.get('market_research', {}) or {}
+    score = context.get('scorecard', {}) or {}
+    product = context.get('product_strategy', {}) or {}
+    pitch = context.get('pitch', {}) or {}
+    monetization = product.get('monetization', []) if isinstance(product, dict) else []
+    deck = pitch.get('deck', []) if isinstance(pitch, dict) else []
+
+    default_titles = [
+        'The Category Is Breaking',
+        'The Problem Is Structural',
+        'Why Now Matters',
+        'A Better Operating Layer',
+        'How It Works',
+        'Value Delivered Fast',
+        'Proof That It Resonates',
+        'A Scalable Revenue Engine',
+        'What Comes Next',
+        'Join The Build',
+    ]
+    type_map = [
+        'hook',
+        'problem',
+        'stakes',
+        'solution',
+        'how_it_works',
+        'impact',
+        'proof',
+        'business_model',
+        'vision',
+        'call_to_action',
+    ]
+    default_visuals = [
+        'Cinematic hero image with one clear subject and strong negative space.',
+        'Tension visual showing the current workflow friction in a realistic setting.',
+        'Market context image that reinforces scale, urgency, and timing.',
+        'Product-led editorial scene showing the solution in action.',
+        'Step-based visual that suggests a clean, modern workflow.',
+        'Outcome-led image with strong whitespace and premium composition.',
+        'Proof-oriented scene that feels credible, sharp, and investor-ready.',
+        'Business model image with an operating-system feel and product polish.',
+        'Forward-looking aspirational image that hints at the long-term vision.',
+        'Confident closing visual that supports a decisive call to action.',
+    ]
+    default_design_notes = [
+        'Use whitespace aggressively and keep the title dominant.',
+        'Keep the composition sparse so the pain reads instantly.',
+        'Lead with one proof point before explanation.',
+        'Balance a bold statement with one supporting visual.',
+        'Use structured sequencing and clear progression.',
+        'Make the slide feel premium, not dashboard-like.',
+        'Keep the tone analytical and confidence-building.',
+        'Use clean hierarchy with no unnecessary clutter.',
+        'Let the future-state visual breathe with strong rhythm.',
+        'End with a clear investor ask and restrained confidence.',
+    ]
+    default_objectives = [
+        'Hook the audience with a sharp opening.',
+        'Show the real friction clearly.',
+        'Frame the urgency and timing.',
+        'Position the product as the answer.',
+        'Explain the workflow simply.',
+        'Show measurable upside quickly.',
+        'Give confidence through proof and traction.',
+        'Show how the business compounds.',
+        'Extend the story into the future.',
+        'Close with a crisp investor ask.',
+    ]
+
+    slides = []
+    for index in range(10):
+        source = deck[index] if index < len(deck) and isinstance(deck[index], dict) else {}
+        title = _clean_text(source.get('title'), default_titles[index])
+        points = _clean_list(
+            source.get('key_points')
+            or source.get('content')
+            or source.get('points')
+            or [],
+            limit=4,
+        )
+        slide_type = type_map[index]
+        stats = []
+
+        if index == 2:
+            if market.get('market_size'):
+                stats.append({'value': _clean_text(market.get('market_size')), 'label': 'Market Size'})
+            if market.get('growth_rate'):
+                stats.append({'value': _clean_text(market.get('growth_rate')), 'label': 'Growth Rate'})
+        if index == 5 and score.get('total'):
+            stats.append({'value': f"{score.get('total')}/100", 'label': 'Fundability Score'})
+            if score.get('verdict'):
+                stats.append({'value': _clean_text(score.get('verdict')), 'label': 'Current Verdict'})
+        if index == 7 and isinstance(monetization, list):
+            for item in monetization[:2]:
+                if isinstance(item, dict) and item.get('model'):
+                    stats.append({'value': _clean_text(item.get('model')), 'label': 'Revenue Model'})
+
+        slides.append({
+            'slide_number': index + 1,
+            'type': slide_type,
+            'layout': _default_layout(slide_type, index),
+            'title': title,
+            'subtitle': _clean_text(
+                source.get('subtitle')
+                or (points[0] if points else '')
+                or market.get('opportunity_summary')
+                or market.get('pain_point')
+                or idea
+            ),
+            'objective': default_objectives[index],
+            'content': points or _clean_list([
+                market.get('pain_point'),
+                market.get('target_customer'),
+                score.get('biggest_strength'),
+                score.get('biggest_risk'),
+            ], limit=4),
+            'stats': stats,
+            'visual_suggestion': default_visuals[index],
+            'design_notes': default_design_notes[index],
+            'animation_plan': {
+                'entry': ['Fade', 'Slide Up', 'Zoom'][index % 3],
+                'sequence': _clean_list(points, limit=3) or ['Title', 'Core message', 'Proof point'],
+                'transition': ['Smooth fade', 'Directional push', 'Soft zoom'][index % 3],
+                'emphasis': 'Subtle stat emphasis' if index in {5, 7} else '',
+            }
+        })
+
+    return _normalize_deck_payload({
+        'presentation_title': idea[:72] or 'Investor Presentation',
+        'presentation_subtitle': 'Locally generated from VentureOS analysis',
+        'design_system': {
+            'template_id': template_preset['template_id'],
+            'theme_name': template_preset['theme_name'],
+            'palette': template_preset['palette'],
+            'style_notes': template_preset['style_notes'],
+        },
+        'slides': slides,
+    }, idea, template_preset)
 
 
 # ── MAIN PAGE ──────────────────────────────────────────────────────────────
@@ -514,6 +1445,13 @@ def generate_slides():
     context = data.get('context', {})
     template_id = data.get('template_id')
     previous_template_id = data.get('previous_template_id')
+    generate_images = bool(data.get('generate_images', True))
+    image_options = data.get('image_options', {})
+    supported_models = get_supported_models()
+    supported_model_keys = {model.get('key') for model in supported_models if model.get('key')}
+    image_model = _clean_text(data.get('image_model'), DEFAULT_MODEL_KEY)
+    if supported_model_keys and image_model not in supported_model_keys:
+        image_model = DEFAULT_MODEL_KEY if DEFAULT_MODEL_KEY in supported_model_keys else next(iter(supported_model_keys))
 
     if not idea:
         return jsonify({'error': 'No idea provided'}), 400
@@ -622,11 +1560,61 @@ Return ONLY a valid JSON object with this exact structure:
 Use real numbers from context whenever possible. Keep the tone confident, crisp, and concise."""
 
     try:
-        llm = get_llm()
-        from langchain_core.messages import HumanMessage
-        response = llm.invoke([HumanMessage(content=prompt)])
-        payload = _extract_json_payload(response.content)
-        deck_payload = _normalize_deck_payload(payload, idea, template_preset)
+        generation_mode = 'llm'
+        generation_notice = ''
+        generation_error = ''
+        try:
+            llm = get_llm()
+            from langchain_core.messages import HumanMessage
+            response = llm.invoke([HumanMessage(content=prompt)])
+            payload = _extract_json_payload(response.content)
+            deck_payload = _normalize_deck_payload(payload, idea, template_preset)
+        except Exception as llm_error:
+            generation_mode = 'local'
+            generation_error = str(llm_error)
+            generation_notice = 'Using local deck structure because premium text generation is unavailable.'
+            deck_payload = _build_local_deck_payload(idea, context, template_preset)
+
+        images_enabled = bool(generate_images and IMAGE_GENERATION_AVAILABLE)
+        if images_enabled:
+            deck_payload['slides'] = enrich_slides_with_images(
+                idea=idea,
+                slides=deck_payload.get('slides', []),
+                market_research=m,
+                model_key=image_model,
+                image_options=image_options,
+            )
+            if IMAGE_GENERATION_IS_FALLBACK:
+                fallback_notice = (
+                    'Using hosted editorial image generation for the live deck, with illustrated fallback if needed.'
+                    if HOSTED_FALLBACK_ENABLED
+                    else 'Using built-in illustrated scenes so the live deck and PPT still include visuals.'
+                )
+                generation_notice = f"{generation_notice} {fallback_notice}".strip() if generation_notice else fallback_notice
+        deck_payload['image_generation'] = {
+            'requested': generate_images,
+            'enabled': images_enabled,
+            'available': IMAGE_GENERATION_AVAILABLE,
+            'message': IMAGE_GENERATION_IMPORT_ERROR,
+            'default_model': image_model,
+            'selected_model': image_model,
+            'supported_models': supported_models,
+            'style_options': get_image_style_options(),
+            'coverage_options': get_image_coverage_options(),
+            'selected_style': _clean_text(
+                (image_options or {}).get('style'),
+                'deck-illustration'
+            ),
+            'selected_coverage': _clean_text(
+                (image_options or {}).get('coverage'),
+                'key-slides'
+            ),
+        }
+        deck_payload['generation_mode'] = generation_mode
+        if generation_notice:
+            deck_payload['generation_notice'] = generation_notice
+        if generation_error:
+            deck_payload['generation_error'] = generation_error
         return jsonify(deck_payload)
     except Exception as e:
         import traceback
