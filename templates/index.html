@@ -692,6 +692,12 @@
         linear-gradient(180deg, rgba(10,14,24,0.04), rgba(10,14,24,0.12)),
         radial-gradient(circle at 65% 46%, rgba(var(--deck-accent-rgb), .28), rgba(var(--deck-accent-rgb), 0) 34%);
     }
+    .slide-feature-media.is-loading .slide-visual-orbit {
+      animation: visual-pulse 2.2s ease-in-out infinite;
+    }
+    .slide-feature-media.is-loading .slide-feature-copy {
+      opacity: 0.96;
+    }
     .slide-visual-orbit {
       display: block;
       width: 100%;
@@ -712,6 +718,10 @@
     .slide-visual-orbit::after { inset: 6%; opacity: .7; }
     .slide-visual-caption { font-size: 11px; opacity: .45; color: var(--deck-text); line-height: 1.5; }
     .slide-visual-model { display: block; margin-top: 6px; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; opacity: .55; color: var(--deck-accent); }
+    @keyframes visual-pulse {
+      0%, 100% { transform: scale(1); opacity: 0.88; }
+      50% { transform: scale(1.03); opacity: 1; }
+    }
     .slide-brand,
     .slide-slide-number {
       font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
@@ -2140,16 +2150,20 @@
     let currentDeckImageCoverage = 'key-slides';
     let currentDeckImageModel = 'flux-studio';
     let currentDeckImageGeneration = null;
+    let currentDeckImageJob = {
+      token: 0,
+      running: false,
+      total: 0,
+      completed: 0,
+      failed: 0,
+      activeIndex: -1
+    };
     let currentDeckVisualRefreshKey = 0;
     const FALLBACK_IMAGE_STYLE_OPTIONS = [
-      { key: 'auto', label: 'Storyboard' },
       { key: 'deck-illustration', label: 'Presentation Illustration' },
       { key: 'animated-scene', label: 'Animated Scene' },
-      { key: 'illustration', label: 'Editorial Illustration' },
       { key: 'cartoon', label: 'Cartoon' },
-      { key: 'product-mockup', label: 'Product Illustration' },
-      { key: '3d-render', label: '3D Illustration' },
-      { key: 'abstract', label: 'Abstract Scenic' }
+      { key: 'abstract', label: 'Neon Editorial' }
     ];
     const FALLBACK_IMAGE_COVERAGE_OPTIONS = [
       { key: 'hero-only', label: 'Hero Only (Fast)' },
@@ -2159,12 +2173,26 @@
     ];
     const FALLBACK_IMAGE_MODELS = [
       { key: 'flux-studio', label: 'Flux Studio' },
-      { key: 'lcm-dreamshaper-v7', label: 'LCM Dreamshaper v7' },
-      { key: 'dreamshaper-8-lcm', label: 'DreamShaper 8 LCM' },
-      { key: 'dreamshaper-8', label: 'DreamShaper 8 (Slow HQ)' },
-      { key: 'tiny-sd', label: 'Fast' },
-      { key: 'sd15', label: 'Stable Diffusion 1.5' }
+      { key: 'ventureos-editorial', label: 'VentureOS Neon Editorial' }
     ];
+    const HOSTED_MODEL_LABELS = {
+      'flux-studio': 'Flux Studio',
+      'ventureos-editorial': 'VentureOS Neon Editorial',
+      flux: 'Flux Studio',
+      'google-imagen-fast': 'Google Imagen Fast',
+      'google-imagen': 'Google Imagen',
+      'qwen-image': 'Qwen Editorial',
+      gptimage: 'GPTImage Editorial'
+    };
+    const HOSTED_MODEL_REPOS = {
+      'flux-studio': 'pollinations/flux',
+      'ventureos-editorial': 'builtin/ventureos-neon-editorial',
+      flux: 'pollinations/flux',
+      'google-imagen-fast': 'google/imagen-4.0-fast-generate-001',
+      'google-imagen': 'google/imagen-4.0-generate-001',
+      'qwen-image': 'pollinations/qwen-image',
+      gptimage: 'pollinations/gptimage'
+    };
     const DECK_TEMPLATE_PRESETS = [
       {
         template_id: 'editorial-midnight',
@@ -2309,6 +2337,11 @@
 
     function normalizeSlide(slide, index) {
       const type = cleanText(slide?.type ?? slide?.slide_type, 'story').toLowerCase();
+      const providerCandidates = Array.isArray(slide?.image_provider_candidates)
+        ? slide.image_provider_candidates.map(item => cleanText(item)).filter(Boolean)
+        : [];
+      const imageRenderSize = Number.parseInt(slide?.image_render_size, 10);
+      const imageSeed = Number.parseInt(slide?.image_seed, 10);
       return {
         slide_number: slide?.slide_number ?? index + 1,
         type,
@@ -2320,11 +2353,17 @@
         stats: normalizeStats(slide),
         visual_suggestion: cleanText(slide?.visual_suggestion ?? slide?.visual ?? slide?.chart_suggestion),
         image_url: cleanText(slide?.image_url ?? slide?.visual_image_url),
+        image_fallback_url: cleanText(slide?.image_fallback_url),
         image_prompt: cleanText(slide?.image_prompt),
         image_model: cleanText(slide?.image_model),
         image_repo_id: cleanText(slide?.image_repo_id),
+        image_fallback_model: cleanText(slide?.image_fallback_model),
+        image_fallback_repo_id: cleanText(slide?.image_fallback_repo_id),
         image_status: cleanText(slide?.image_status),
         image_error: cleanText(slide?.image_error),
+        image_provider_candidates: providerCandidates,
+        image_render_size: Number.isFinite(imageRenderSize) ? imageRenderSize : 0,
+        image_seed: Number.isFinite(imageSeed) ? imageSeed : 0,
         design_notes: cleanText(slide?.design_notes),
         animation_plan: normalizeAnimationPlan(slide?.animation_plan, slide)
       };
@@ -2419,6 +2458,33 @@
       return Array.isArray(options) && options.length ? options : FALLBACK_IMAGE_MODELS;
     }
 
+    function queuedDeckImageCount() {
+      return (currentDeckData?.slides || []).filter(slide => ['queued', 'generating'].includes(cleanText(slide?.image_status))).length;
+    }
+
+    function hostedModelLabel(modelKey) {
+      return HOSTED_MODEL_LABELS[cleanText(modelKey)] || cleanText(modelKey, 'VentureOS Neon Editorial');
+    }
+
+    function hostedModelRepo(modelKey) {
+      return HOSTED_MODEL_REPOS[cleanText(modelKey)] || 'builtin/ventureos-neon-editorial';
+    }
+
+    function imageJobStatusNote() {
+      const pending = queuedDeckImageCount();
+      if (currentDeckImageJob.running && currentDeckImageJob.total) {
+        const activeStep = Math.min(currentDeckImageJob.completed + 1, currentDeckImageJob.total);
+        return `Generating premium visuals ${activeStep}/${currentDeckImageJob.total}. You can keep browsing the deck while each slide gets its own image.`;
+      }
+      if (pending && currentDeckImageGeneration?.progressive_enabled) {
+        return `${pending} premium slide visual${pending === 1 ? ' is' : 's are'} still rendering. PPT export unlocks when they finish.`;
+      }
+      if (!pending && currentDeckImageGeneration?.progressive_enabled && (currentDeckData?.slides || []).some(slide => cleanText(slide?.image_status) === 'generated')) {
+        return 'Premium slide visuals are ready. Each selected slide now has its own generated image.';
+      }
+      return '';
+    }
+
     function renderVisualControls() {
       const bar = document.getElementById('visualControlsBar');
       if (!bar) return;
@@ -2448,41 +2514,719 @@
         currentDeckData.generation_notice || (imageGenUnavailable ? currentDeckImageGeneration?.message : '')
       );
       const isTechnicalNotice = /using local deck structure|using browser fallback deck|using built-in|premium text generation is unavailable|live deck and ppt/i.test(rawNotice);
-      const note = !isTechnicalNotice && rawNotice
+      const jobNote = imageJobStatusNote();
+      const note = jobNote || (!isTechnicalNotice && rawNotice
         ? rawNotice
         : (currentDeckImageCoverage === 'hero-only'
             ? 'Hero visuals first for a faster result.'
             : currentDeckImageCoverage === 'key-slides'
-              ? 'Balanced mode: aim for 4-5 image-backed slides in each deck.'
-              : 'Higher image coverage can take longer. Refresh visuals after changing style or model.');
+              ? 'Balanced mode: a smaller set of slides will upgrade to premium imagery.'
+              : 'Every slide now gets its own visual. Premium images may continue filling in slide by slide.'));
       const noteEl = document.getElementById('visualStatusNote');
       noteEl.textContent = note;
       noteEl.style.display = note ? 'block' : 'none';
       bar.style.display = 'flex';
     }
 
+    function hasActiveDeckForVisualRefresh() {
+      return Boolean(slidesGenerated && Array.isArray(currentDeckData?.slides) && currentDeckData.slides.length);
+    }
+
     function setImageStyle(styleKey) {
-      currentDeckImageStyle = cleanText(styleKey, currentDeckImageStyle || 'deck-illustration');
+      const nextStyle = cleanText(styleKey, currentDeckImageStyle || 'deck-illustration');
+      if (nextStyle === currentDeckImageStyle) return;
+      currentDeckImageStyle = nextStyle;
       renderVisualControls();
+      if (hasActiveDeckForVisualRefresh()) {
+        refreshSlideVisuals(`Switching to ${nextStyle.replace(/-/g, ' ')} visuals...`);
+      }
     }
 
     function setImageCoverage(coverageKey) {
-      currentDeckImageCoverage = cleanText(coverageKey, currentDeckImageCoverage || 'key-slides');
+      const nextCoverage = cleanText(coverageKey, currentDeckImageCoverage || 'key-slides');
+      if (nextCoverage === currentDeckImageCoverage) return;
+      currentDeckImageCoverage = nextCoverage;
       renderVisualControls();
+      if (hasActiveDeckForVisualRefresh()) {
+        refreshSlideVisuals(`Updating ${nextCoverage.replace(/-/g, ' ')} image coverage...`);
+      }
     }
 
     function setImageModel(modelKey) {
-      currentDeckImageModel = cleanText(modelKey, currentDeckImageModel || 'lcm-dreamshaper-v7');
+      const nextModel = cleanText(modelKey, currentDeckImageModel || 'flux-studio');
+      if (nextModel === currentDeckImageModel) return;
+      currentDeckImageModel = nextModel;
       renderVisualControls();
+      if (hasActiveDeckForVisualRefresh()) {
+        refreshSlideVisuals('Updating presentation image engine...');
+      }
     }
 
-    function refreshSlideVisuals() {
+    function refreshSlideVisuals(messageOverride = '') {
       currentDeckVisualRefreshKey += 1;
       slidesGenerated = false;
-      showToast(currentDeckImageCoverage === 'hero-only'
+      showToast(messageOverride || (currentDeckImageCoverage === 'hero-only'
         ? 'Refreshing hero visuals...'
-        : `Refreshing ${currentDeckImageCoverage.replace('-', ' ')} visuals. This can take a while locally...`);
+        : `Refreshing ${currentDeckImageCoverage.replace('-', ' ')} visuals. Premium images will refill slide by slide...`));
       generateSlides(false);
+    }
+
+    function nextDeckImageJobToken() {
+      currentDeckImageJob = {
+        token: currentDeckImageJob.token + 1,
+        running: false,
+        total: 0,
+        completed: 0,
+        failed: 0,
+        activeIndex: -1
+      };
+      return currentDeckImageJob.token;
+    }
+
+    function pendingImageIndices(deck = currentDeckData) {
+      return (deck?.slides || [])
+        .map((slide, index) => ({ slide, index }))
+        .filter(({ slide }) => ['queued', 'generating'].includes(cleanText(slide?.image_status)))
+        .map(({ index }) => index);
+    }
+
+    function hostedCandidateModelsForSlide(slide) {
+      const candidates = Array.isArray(slide?.image_provider_candidates)
+        ? slide.image_provider_candidates.map(item => cleanText(item)).filter(Boolean)
+        : [];
+      if (candidates.length) return candidates;
+      const modelKey = cleanText(currentDeckImageModel, 'flux-studio');
+      if (modelKey === 'ventureos-editorial') return [];
+      if (modelKey === 'google-imagen-fast') return ['google-imagen-fast'];
+      if (modelKey === 'google-imagen') return ['google-imagen'];
+      if (modelKey === 'flux-studio') return ['flux'];
+      if (modelKey === 'qwen-editorial') return ['qwen-image'];
+      if (modelKey === 'gptimage-editorial') return ['gptimage'];
+      return ['flux', 'gptimage', 'qwen-image'];
+    }
+
+    function hostedImageRenderSize(slide) {
+      const parsed = Number.parseInt(slide?.image_render_size, 10);
+      return Number.isFinite(parsed) && parsed >= 384 ? parsed : 512;
+    }
+
+    function deckImageHashSeed(...parts) {
+      const joined = parts.map(part => cleanText(part)).join('|');
+      let total = 0;
+      for (let i = 0; i < joined.length; i += 1) total += (i + 1) * joined.charCodeAt(i);
+      return Math.max(1, total || 1);
+    }
+
+    function hostedImageSlideIndices(slides, coverage = currentDeckImageCoverage) {
+      const list = Array.isArray(slides) ? slides : [];
+      if (!list.length) return [];
+      const typeLookup = {};
+      list.forEach((slide, index) => {
+        const type = cleanText(slide?.type).toLowerCase();
+        if (type && !Object.prototype.hasOwnProperty.call(typeLookup, type)) typeLookup[type] = index;
+      });
+      const ordered = [];
+      const seen = new Set();
+      [
+        typeLookup.hook ?? 0,
+        typeLookup.problem ?? (list.length > 1 ? 1 : 0),
+        typeLookup.solution ?? Math.min(3, list.length - 1),
+        typeLookup.how_it_works ?? Math.min(4, list.length - 1),
+        typeLookup.impact ?? Math.min(5, list.length - 1),
+        typeLookup.proof ?? Math.min(6, list.length - 1),
+        typeLookup.vision ?? Math.max(0, list.length - 2),
+        typeLookup.call_to_action ?? Math.max(0, list.length - 1)
+      ].forEach(index => {
+        const safeIndex = Math.max(0, Math.min(list.length - 1, index));
+        if (!seen.has(safeIndex)) {
+          seen.add(safeIndex);
+          ordered.push(safeIndex);
+        }
+      });
+      const normalized = cleanText(coverage, 'all').toLowerCase();
+      if (normalized === 'all') return list.map((_, index) => index);
+      if (normalized === 'image-heavy') return Array.from({ length: Math.min(list.length, Math.max(7, ordered.length)) }, (_, index) => index);
+      if (normalized === 'hero-only') return ordered.slice(0, 2);
+      return ordered.slice(0, 5);
+    }
+
+    function topicPromptFromIdea(idea, slide) {
+      const corpus = [idea, slide?.title, slide?.subtitle, slide?.visual_suggestion, slide?.objective]
+        .map(value => cleanText(value).toLowerCase())
+        .join(' ');
+      const subjects = [
+        { bucket: 'gaming', keywords: ['game', 'gaming', 'indie', 'developer', 'dev', 'studio', 'creator', 'steam'], prompt: 'indie game creator studio, premium collectibles, glowing dev setup, atmospheric shelves, cinematic environment art' },
+        { bucket: 'restaurant', keywords: ['restaurant', 'food', 'inventory', 'dining', 'kitchen', 'ingredients', 'chef'], prompt: 'refined restaurant operations scene, chef pass, inventory shelves, premium hospitality workspace, cinematic still life' },
+        { bucket: 'housing', keywords: ['housing', 'sublease', 'sublessee', 'subleaser', 'rent', 'rental', 'apartment', 'apartments', 'student housing', 'property', 'lease', 'leasing', 'tenant', 'roommate', 'roommates'], prompt: 'student housing search environment, elevated apartment interiors, urban architecture, leasing journey concept art' },
+        { bucket: 'health', keywords: ['health', 'medical', 'medicine', 'med school', 'medical school', 'patient', 'clinic', 'biotech', 'diagnostic', 'care', 'clinical', 'doctor', 'nurse', 'anatomy', 'physiology'], prompt: 'premium medical learning and healthcare concept scene, anatomy study cues, clinical tutoring atmosphere, thoughtful editorial composition' },
+        { bucket: 'sports', keywords: ['sports', 'football', 'team', 'stadium', 'league'], prompt: 'dramatic sports operations environment, strategy room, stadium energy, premium athletic editorial scene' },
+        { bucket: 'finance', keywords: ['finance', 'fintech', 'payment', 'payments', 'revenue', 'bank', 'billing', 'subscription'], prompt: 'premium fintech operations scene, sophisticated financial workspace, screens and objects, editorial mood' },
+        { bucket: 'education', keywords: ['education', 'learning', 'student', 'students', 'school', 'college', 'research'], prompt: 'modern learning studio, thoughtful academic environment, premium educational editorial scene' },
+        { bucket: 'logistics', keywords: ['logistics', 'warehouse', 'supply', 'delivery', 'shipping', 'routing'], prompt: 'warehouse command center, supply chain operations environment, premium industrial editorial scene' },
+        { bucket: 'software', keywords: ['ai', 'agent', 'software', 'saas', 'platform', 'automation', 'analytics', 'workflow', 'app', 'tool'], prompt: 'product strategy workspace, premium startup studio, modern software operations environment' }
+      ];
+      const match = subjects.find(entry => entry.keywords.some(keyword => corpus.includes(keyword)));
+      return match?.prompt || 'premium editorial concept art scene for a startup pitch deck, atmospheric and polished';
+    }
+
+    function abstractTopicPromptFromIdea(idea, slide) {
+      const corpus = [idea, slide?.title, slide?.subtitle, slide?.visual_suggestion, slide?.objective]
+        .map(value => cleanText(value).toLowerCase())
+        .join(' ');
+      const subjects = [
+        { keywords: ['game', 'gaming', 'indie', 'developer', 'dev', 'studio', 'creator', 'steam'], prompt: 'stylized indie game studio editorial scene with creator energy, premium neon rim light, and polished synthwave mood' },
+        { keywords: ['restaurant', 'food', 'inventory', 'dining', 'kitchen', 'ingredients', 'chef'], prompt: 'stylized restaurant operations editorial scene with supply cues, premium neon accents, and cinematic rhythm' },
+        { keywords: ['housing', 'sublease', 'sublessee', 'subleaser', 'rent', 'rental', 'apartment', 'apartments', 'student housing', 'property', 'lease', 'leasing', 'tenant', 'roommate', 'roommates'], prompt: 'stylized student housing editorial scene with modern apartment architecture, search cues, and premium neon wayfinding light' },
+        { keywords: ['health', 'medical', 'medicine', 'med school', 'medical school', 'patient', 'clinic', 'biotech', 'diagnostic', 'care', 'clinical', 'doctor', 'nurse', 'anatomy', 'physiology'], prompt: 'stylized medical learning editorial scene with anatomy cues, clinical confidence, and premium neon highlights' },
+        { keywords: ['sports', 'football', 'team', 'stadium', 'league'], prompt: 'stylized sports strategy editorial scene with route energy, performance atmosphere, and premium neon accents' },
+        { keywords: ['finance', 'fintech', 'payment', 'payments', 'revenue', 'bank', 'billing', 'subscription'], prompt: 'stylized fintech editorial scene with exchange energy, elegant market cues, and premium neon highlights' },
+        { keywords: ['education', 'learning', 'student', 'students', 'school', 'college', 'research'], prompt: 'stylized learning editorial scene with research cues, academic aspiration, and premium neon accents' },
+        { keywords: ['logistics', 'warehouse', 'supply', 'delivery', 'shipping'], prompt: 'stylized logistics editorial scene with routing energy, distribution cues, and premium neon highlights' },
+        { keywords: ['ai', 'agent', 'software', 'saas', 'platform', 'automation', 'analytics', 'workflow', 'app', 'tool'], prompt: 'stylized product-tech editorial scene with workflow cards, intelligent automation cues, and premium neon accents' }
+      ];
+      const match = subjects.find(entry => entry.keywords.some(keyword => corpus.includes(keyword)));
+      return match?.prompt || 'premium neon editorial scene with one clear subject, atmospheric depth, and polished presentation energy';
+    }
+
+    function topicBucketFromDeckIdea(idea, slide) {
+      const corpus = [idea, slide?.title, slide?.subtitle, slide?.visual_suggestion, slide?.objective, ...(Array.isArray(slide?.content) ? slide.content : [])]
+        .map(value => cleanText(value).toLowerCase())
+        .join(' ');
+      const weightedBuckets = {
+        housing: { 'housing': 6, 'sublease': 8, 'sublessee': 8, 'subleaser': 8, 'rent': 4, 'rental': 4, 'apartment': 6, 'apartments': 6, 'student housing': 9, 'property': 4, 'lease': 5, 'leasing': 5, 'tenant': 5, 'roommate': 5, 'roommates': 5 },
+        health: { 'health': 4, 'medical': 8, 'medicine': 8, 'med school': 8, 'medical school': 10, 'patient': 6, 'clinic': 6, 'biotech': 6, 'care': 4, 'diagnostic': 6, 'clinical': 7, 'doctor': 6, 'nurse': 6, 'anatomy': 7, 'physiology': 7 },
+        education: { 'education': 5, 'learning': 5, 'student': 4, 'students': 4, 'school': 4, 'college': 4, 'research': 4, 'tutor': 7, 'tutoring': 7, 'study': 5, 'training': 5 },
+        gaming: { 'game': 6, 'gaming': 6, 'indie': 5, 'developer': 5, 'dev': 4, 'studio': 4, 'creator': 4, 'steam': 4 },
+        restaurant: { 'restaurant': 7, 'food': 4, 'inventory': 6, 'dining': 5, 'kitchen': 5, 'ingredients': 5, 'chef': 5 },
+        sports: { 'sports': 6, 'football': 6, 'team': 4, 'stadium': 5, 'league': 4 },
+        finance: { 'finance': 6, 'fintech': 7, 'payment': 6, 'payments': 6, 'revenue': 4, 'bank': 5, 'billing': 5, 'subscription': 4 },
+        logistics: { 'logistics': 7, 'warehouse': 6, 'supply': 5, 'delivery': 6, 'shipping': 6, 'routing': 5 },
+        software: { 'ai': 3, 'agent': 4, 'software': 6, 'saas': 6, 'platform': 5, 'automation': 6, 'analytics': 5, 'workflow': 5, 'app': 3, 'tool': 3 }
+      };
+      const medicalTerms = ['medical', 'medicine', 'med school', 'medical school', 'clinical', 'anatomy', 'physiology', 'doctor', 'nurse', 'hospital'];
+      const learningTerms = ['student', 'students', 'school', 'college', 'learning', 'tutor', 'tutoring', 'study', 'training'];
+      let best = { key: 'generic', score: 0 };
+      for (const [key, keywords] of Object.entries(weightedBuckets)) {
+        let score = Object.entries(keywords).reduce((sum, [keyword, weight]) => sum + (corpus.includes(keyword) ? weight : 0), 0);
+        if (key === 'health' && medicalTerms.some(term => corpus.includes(term)) && learningTerms.some(term => corpus.includes(term))) score += 10;
+        if (key === 'education' && corpus.includes('student housing')) score -= 6;
+        if (score > best.score) best = { key, score };
+      }
+      return best.key;
+    }
+
+    function extractFocusTermsForSlide(idea, slide, limit = 5) {
+      const stopwords = new Set([
+        'about', 'across', 'after', 'agent', 'agents', 'analysis', 'because', 'brand', 'business', 'call',
+        'chart', 'company', 'customer', 'customers', 'deck', 'for', 'future', 'growth', 'idea', 'impact', 'include',
+        'investor', 'key', 'market', 'model', 'more', 'need', 'next', 'offer', 'pitch', 'platform', 'problem',
+        'product', 'proof', 'reliable', 'revenue', 'risk', 'roadmap', 'show', 'slide', 'slides', 'solution',
+        'startup', 'story', 'system', 'team', 'their', 'these', 'this', 'title', 'traction', 'value', 'vision',
+        'what', 'with', 'your', 'users'
+      ]);
+      const corpus = [idea, slide?.title, slide?.subtitle, slide?.objective, slide?.visual_suggestion, ...(Array.isArray(slide?.content) ? slide.content : [])]
+        .map(value => cleanText(value).toLowerCase())
+        .join(' ');
+      const tokens = corpus.match(/[a-z][a-z0-9-]{2,}/g) || [];
+      const terms = [];
+      const seen = new Set();
+      for (const token of tokens) {
+        let normalized = token.replace(/-/g, ' ');
+        if (normalized.endsWith('s') && normalized.length > 4) normalized = normalized.slice(0, -1);
+        if (seen.has(normalized) || stopwords.has(normalized)) continue;
+        seen.add(normalized);
+        terms.push(normalized);
+        if (terms.length >= limit) break;
+      }
+      return terms;
+    }
+
+    function topicMotifsForSlide(idea, slide, index = 0, limit = 3) {
+      const motifs = {
+        gaming: ['controller silhouettes', 'concept art panels', 'creator workbench', 'asset shelves', 'code monitors', 'dev tool glow'],
+        restaurant: ['ingredient crates', 'scanner pulses', 'prep surfaces', 'supply shelves', 'menu-card silhouettes', 'service counters'],
+        housing: ['apartment facades', 'map pins', 'keys', 'room cards', 'leasing routes', 'urban residential interiors'],
+        health: ['care glyphs', 'pulse rings', 'diagnostic panels', 'clinic interiors', 'medical device silhouettes', 'wellness signals'],
+        sports: ['stadium arcs', 'play routes', 'training dashboards', 'team strategy boards', 'score pulses', 'athletic path lines'],
+        finance: ['payment cards', 'ledger routes', 'market graphs', 'wallet tokens', 'trading panels', 'exchange signals'],
+        education: ['campus silhouettes', 'learning cards', 'book forms', 'idea bulbs', 'student pathways', 'research markers'],
+        logistics: ['route maps', 'package nodes', 'warehouse racks', 'tracking lines', 'fleet silhouettes', 'distribution hubs'],
+        software: ['workflow cards', 'automation routes', 'product panels', 'node graphs', 'data tiles', 'clean UI blocks'],
+        generic: ['premium interface cards', 'signal paths', 'editorial depth', 'clean product silhouettes', 'system nodes', 'ambient glow']
+      };
+      const bucket = topicBucketFromDeckIdea(idea, slide);
+      const source = motifs[bucket] || motifs.generic;
+      const rotation = index % source.length;
+      return source.slice(rotation).concat(source.slice(0, rotation)).slice(0, limit);
+    }
+
+    function slideSubjectBriefForDeck(idea, slide) {
+      const bucket = topicBucketFromDeckIdea(idea, slide);
+      const type = cleanText(slide?.type, 'story').toLowerCase();
+      const subjects = {
+        hook: {
+          housing: 'student housing discovery scene with modern apartment architecture and trusted search cues',
+          gaming: 'indie game creator studio scene with polished dev energy and collectible craft',
+          software: 'software platform mission scene with product confidence and intelligent automation',
+          generic: 'premium startup mission scene with one clear focal subject'
+        },
+        problem: {
+          housing: 'student renters facing fragmented apartment search and unreliable sublease discovery',
+          gaming: 'indie creators struggling with scattered tools and limited distribution support',
+          health: 'medical learners facing fragmented study support and low-confidence mastery',
+          software: 'teams facing disconnected systems and manual workflow friction',
+          generic: 'teams facing fragmented workflows and avoidable operational friction'
+        },
+        solution: {
+          housing: 'verified housing-matching product scene with trusted listings and guided move-in flow',
+          gaming: 'creator platform scene with curated resources, launch tools, and premium support',
+          health: 'medical tutoring scene with guided mastery, anatomy cues, and confident study support',
+          software: 'automation platform scene with elegant workflow orchestration and product clarity',
+          generic: 'clean product-world scene with confident problem solving'
+        },
+        how_it_works: { generic: 'connected workflow scene showing how the system moves from input to outcome' },
+        impact: { generic: 'outcome scene showing measurable progress, adoption, and value creation' },
+        proof: { generic: 'credible traction scene with demand signals, usage proof, and trustworthy momentum' },
+        business_model: { generic: 'commercial system scene with pricing layers, exchange flows, and monetization clarity' },
+        vision: { generic: 'future-state scene with aspirational scale, elegance, and category leadership' },
+        call_to_action: { generic: 'closing brand scene with a focused emblem, decisive energy, and premium finality' }
+      };
+      return subjects[type]?.[bucket] || subjects[type]?.generic || 'premium topic-faithful scene with a clear central subject';
+    }
+
+    function topicDisplayLabel(idea, slide) {
+      const labels = {
+        gaming: 'Indie Gaming',
+        restaurant: 'Restaurant Operations',
+        housing: 'Student Housing',
+        health: 'Health Tech',
+        sports: 'Sports Intelligence',
+        finance: 'Fintech',
+        education: 'Education',
+        logistics: 'Logistics',
+        software: 'Software Platform',
+        generic: 'Startup'
+      };
+      return labels[topicBucketFromDeckIdea(idea, slide)] || labels.generic;
+    }
+
+    function presentationVisualSummary(slide) {
+      const bucket = topicBucketFromDeckIdea(currentIdea, slide);
+      const type = cleanText(slide?.type, 'story').toLowerCase();
+      const summaries = {
+        gaming: {
+          hook: 'Creator studio hero scene',
+          problem: 'Scattered tooling friction scene',
+          solution: 'Curated creator platform scene',
+          how_it_works: 'Creator workflow scene',
+          impact: 'Momentum and adoption scene',
+          proof: 'Traction proof scene',
+          generic: 'Topic-faithful gaming scene'
+        },
+        housing: {
+          hook: 'Student housing discovery scene',
+          problem: 'Apartment search friction scene',
+          solution: 'Trusted listings product scene',
+          how_it_works: 'Rental workflow scene',
+          impact: 'Move-in outcome scene',
+          proof: 'Marketplace traction scene',
+          generic: 'Topic-faithful housing scene'
+        },
+        software: {
+          hook: 'Product mission scene',
+          problem: 'Workflow bottleneck scene',
+          solution: 'Automation platform scene',
+          how_it_works: 'Connected workflow scene',
+          impact: 'Product value scene',
+          proof: 'Adoption proof scene',
+          generic: 'Topic-faithful software scene'
+        },
+        restaurant: {
+          hook: 'Operations control scene',
+          problem: 'Inventory friction scene',
+          solution: 'Kitchen intelligence scene',
+          how_it_works: 'Service workflow scene',
+          generic: 'Topic-faithful restaurant scene'
+        },
+        health: {
+          hook: 'Care mission scene',
+          problem: 'Signal fragmentation scene',
+          solution: 'Clinical decision scene',
+          generic: 'Topic-faithful health scene'
+        },
+        finance: {
+          hook: 'Fintech mission scene',
+          problem: 'Payment friction scene',
+          solution: 'Transaction flow scene',
+          generic: 'Topic-faithful fintech scene'
+        },
+        logistics: {
+          hook: 'Routing mission scene',
+          problem: 'Supply friction scene',
+          solution: 'Control tower scene',
+          generic: 'Topic-faithful logistics scene'
+        },
+        education: {
+          hook: 'Learning mission scene',
+          problem: 'Guidance gap scene',
+          solution: 'Learning platform scene',
+          generic: 'Topic-faithful education scene'
+        },
+        sports: {
+          hook: 'Performance mission scene',
+          problem: 'Decision friction scene',
+          solution: 'Strategy intelligence scene',
+          generic: 'Topic-faithful sports scene'
+        },
+        generic: {
+          hook: 'Mission-led hero scene',
+          problem: 'Core friction scene',
+          solution: 'Product answer scene',
+          how_it_works: 'Connected workflow scene',
+          impact: 'Outcome-led scene',
+          proof: 'Proof and traction scene',
+          business_model: 'Commercial system scene',
+          vision: 'Future-state scene',
+          call_to_action: 'Closing brand scene',
+          generic: 'Topic-faithful premium scene'
+        }
+      };
+      return summaries[bucket]?.[type] || summaries[bucket]?.generic || summaries.generic[type] || summaries.generic.generic;
+    }
+
+    function presentationLayoutSummary(slide) {
+      const layout = cleanText(slide?.layout, defaultLayoutForType(slide?.type, currentSlideIndex)).toLowerCase();
+      const summaries = {
+        cover: 'Split layout with one dominant visual.',
+        spotlight: 'Balanced narrative layout with generous whitespace.',
+        metrics: 'Proof-led layout with clean metric blocks.',
+        roadmap: 'Sequenced layout with clear step progression.',
+        comparison: 'Side-by-side layout with structured contrast.',
+        closing: 'Clean closing layout with a decisive focal point.'
+      };
+      return summaries[layout] || 'Editorial layout with one strong focal area.';
+    }
+
+    function presentationImageStatusSummary(slide) {
+      const status = cleanText(slide?.image_status).toLowerCase();
+      if (slide?.image_url) return 'Premium topic image attached.';
+      if (status === 'failed') return 'Current fallback image is attached for this slide.';
+      if (['queued', 'generating'].includes(status)) return 'Topic-specific premium image is still rendering.';
+      return 'No image is attached with the current coverage setting.';
+    }
+
+    function stylePromptForDeck(styleKey = currentDeckImageStyle) {
+      const key = cleanText(styleKey, 'deck-illustration').toLowerCase();
+      const prompts = {
+        'deck-illustration': 'premium scene illustration, cinematic environment art, polished keynote realism, topic-faithful composition, clean atmospheric storytelling',
+        'animated-scene': 'premium stylized scene illustration, animated feature-film lighting, cinematic environment art, scene-first composition, richly lit and detailed',
+        'cartoon': 'premium stylized cartoon scene, cel-shaded environment art, clean shapes, rich lighting, polished and detailed',
+        'abstract': 'high-end neon editorial illustration, dark premium background, electric orange and cyan rim light, topic-faithful subject, poster-grade clarity, premium presentation artwork',
+        'illustration': 'high-end editorial illustration with premium presentation polish and cinematic storytelling',
+        'product-mockup': 'premium stylized product illustration with polished materials and studio lighting',
+        '3d-render': 'premium stylized 3D illustration, cinematic lighting, detailed materials, editorial polish'
+      };
+      return prompts[key] || prompts['deck-illustration'];
+    }
+
+    function promptCompositionForSlide(slide, index, styleKey = currentDeckImageStyle) {
+      const type = cleanText(slide?.type, 'story').toLowerCase();
+      const style = cleanText(styleKey, 'deck-illustration').toLowerCase();
+      if (style === 'abstract') {
+        const typeCues = {
+          hook: 'dominant hero subject, subtle interface cues, luxury poster balance, and clear storytelling focus',
+          problem: 'tension-filled composition, asymmetrical balance, broken flow, and premium moody atmosphere',
+          stakes: 'layered depth, expanding scale cues, dramatic signal intensity, and poster-grade focus',
+          solution: 'ordered product-world scene, clean central structure, optimistic orange and cyan glow',
+          how_it_works: 'connected cards, nodes, route lines, or staged objects with clear flow',
+          impact: 'ascending energy, pulse rings, brighter outcome cues, and a strong focal symbol',
+          proof: 'evidence-driven composition, trust cues, refined panels, and anchored momentum',
+          business_model: 'exchange cards, pricing cues, routing connectors, and premium modular order',
+          vision: 'wide future-state poster with layered horizon glow and elegant ambition',
+          call_to_action: 'focused closing emblem, radiant center, and premium final cadence'
+        };
+        const variations = [
+          'editorial poster balance with one dominant luminous anchor',
+          'slightly elevated composition with layered circuit planes',
+          'cinematic side glow with floating interface elements',
+          'gallery-like composition with strong negative space and spark details',
+          'quiet premium composition with restrained signal trails and atmospheric depth'
+        ];
+        return `${typeCues[type] || 'premium abstract composition with clean hierarchy and atmospheric depth'}, ${variations[index % variations.length]}`;
+      }
+      const typeCues = {
+        hook: 'wide establishing shot, strong silhouette subject, architectural depth, luxury editorial mood',
+        problem: 'off-axis composition, tactile objects, narrative friction, cinematic tension',
+        stakes: 'dramatic depth, layered environment storytelling, elevated scale cues',
+        solution: 'organized hero composition, cleaner geometry, optimistic lighting, product-world clarity',
+        how_it_works: 'multi-zone operational composition, process depth, clean pathways, premium systems feel',
+        impact: 'success-state composition, premium environmental storytelling, confident lighting',
+        proof: 'credible editorial still life, refined screens and objects, grounded realism without readable text',
+        business_model: 'commercial still life composition, refined money-flow cues, premium materials',
+        vision: 'future-facing composition, expansive horizon, aspirational architecture, elegant atmosphere',
+        call_to_action: 'closing campaign image, decisive focal point, polished premium finish'
+      };
+      const variations = [
+        'camera at eye level with soft depth of field',
+        'slightly elevated perspective with generous foreground shape language',
+        'cinematic side light and asymmetrical balance',
+        'gallery-like composition with premium restraint and strong negative space',
+        'editorial magazine composition with layered depth and subtle atmosphere'
+      ];
+      return `${typeCues[type] || 'premium editorial composition with clean hierarchy and atmospheric depth'}, ${variations[index % variations.length]}`;
+    }
+
+    function hostedPromptForSlide(slide, index) {
+      const title = cleanText(slide?.title);
+      const subtitle = cleanText(slide?.subtitle);
+      const visual = cleanText(slide?.visual_suggestion);
+      const style = cleanText(currentDeckImageStyle, 'deck-illustration').toLowerCase();
+      const abstractMode = style === 'abstract';
+      const focusTerms = extractFocusTermsForSlide(currentIdea, slide, 5);
+      const motifs = topicMotifsForSlide(currentIdea, slide, index, 3);
+      const subjectBrief = slideSubjectBriefForDeck(currentIdea, slide);
+      return [
+        `topic-faithful premium editorial illustration of ${subjectBrief}`,
+        abstractMode ? abstractTopicPromptFromIdea(currentIdea, slide) : topicPromptFromIdea(currentIdea, slide),
+        stylePromptForDeck(currentDeckImageStyle),
+        promptCompositionForSlide(slide, index, currentDeckImageStyle),
+        motifs.length ? `include motifs such as ${motifs.join(', ')}` : '',
+        focusTerms.length ? `topic cues: ${focusTerms.join(', ')}` : '',
+        title ? `theme inspired by "${title}"` : '',
+        visual || subtitle,
+        currentIdea ? `for startup idea "${cleanText(currentIdea).slice(0, 120)}"` : '',
+        'square composition for a premium presentation image panel',
+        'no text, no letters, no words, no watermark, no logo, no captions, no readable UI text',
+        'no signature, no footer text, no bottom strip, no edge labels, no stray glyphs, no tiny text artifacts',
+        'no signs, no posters, no billboards, no labels, no typographic panels',
+        'if interface elements appear, keep them icon-only and textless with clean graphic blocks',
+        'not a generic infographic, not a plain chart, not a literal dashboard screenshot',
+        'prefer one cohesive scene instead of a collage of unrelated panels',
+        'make the startup topic immediately obvious and avoid random unrelated symbols',
+        abstractMode ? 'allow symbolic topic objects, dashboards, gears, icons, city forms, and industry motifs when relevant' : '',
+        abstractMode ? 'keep it stylistic and poster-like, but still grounded in the actual topic and startup domain' : ''
+      ].filter(Boolean).join(', ');
+    }
+
+    function providerCandidatesForPlannedSlide(slide, index) {
+      const type = cleanText(slide?.type, 'story').toLowerCase();
+      const modelKey = cleanText(currentDeckImageModel, 'flux-studio');
+      if (modelKey === 'ventureos-editorial') return [];
+      if (modelKey === 'google-imagen-fast') return ['google-imagen-fast'];
+      if (modelKey === 'google-imagen') return ['google-imagen'];
+      if (modelKey === 'flux-studio') return ['flux'];
+      if (modelKey === 'qwen-editorial') return ['qwen-image'];
+      if (modelKey === 'gptimage-editorial') return ['gptimage'];
+      const themed = {
+        hook: ['flux', 'gptimage', 'qwen-image'],
+        problem: ['flux', 'qwen-image', 'gptimage'],
+        stakes: ['flux', 'qwen-image', 'gptimage'],
+        solution: ['flux', 'gptimage', 'qwen-image'],
+        how_it_works: ['qwen-image', 'flux', 'gptimage'],
+        impact: ['flux', 'gptimage', 'qwen-image'],
+        proof: ['flux', 'gptimage', 'qwen-image'],
+        business_model: ['qwen-image', 'flux', 'gptimage'],
+        vision: ['flux', 'gptimage', 'qwen-image'],
+        call_to_action: ['flux', 'gptimage', 'qwen-image']
+      };
+      const ordered = themed[type] || ['flux', 'gptimage', 'qwen-image'];
+      const rotation = index % ordered.length;
+      return ordered.slice(rotation).concat(ordered.slice(0, rotation));
+    }
+
+    function renderSizeForPlannedSlide(slide) {
+      const type = cleanText(slide?.type, 'story').toLowerCase();
+      const coverage = cleanText(currentDeckImageCoverage, 'key-slides').toLowerCase();
+      if (['hook', 'vision', 'call_to_action'].includes(type)) return 768;
+      if (coverage === 'all') return 512;
+      if (['solution', 'how_it_works', 'impact', 'proof'].includes(type)) return 640;
+      return 512;
+    }
+
+    function prepareDeckForProgressiveImages(deck) {
+      if (!deck || !Array.isArray(deck.slides) || !deck.slides.length) return deck;
+      const coverage = cleanText(deck?.image_generation?.selected_coverage, currentDeckImageCoverage || 'key-slides');
+      const selected = hostedImageSlideIndices(deck.slides, coverage);
+      const selectedSet = new Set(selected);
+      deck.slides = deck.slides.map((slide, index) => {
+        const nextSlide = { ...slide };
+        if (nextSlide.image_url) return nextSlide;
+        if (!selectedSet.has(index)) {
+          nextSlide.image_status = cleanText(nextSlide.image_status, 'skipped');
+          return nextSlide;
+        }
+        nextSlide.image_prompt = hostedPromptForSlide(nextSlide, index);
+        nextSlide.image_provider_candidates = providerCandidatesForPlannedSlide(nextSlide, index);
+        nextSlide.image_render_size = renderSizeForPlannedSlide(nextSlide);
+        nextSlide.image_seed = deckImageHashSeed(currentIdea, nextSlide.title, nextSlide.subtitle, nextSlide.type, currentDeckImageStyle, currentDeckVisualRefreshKey, index);
+        nextSlide.image_model = cleanText(nextSlide.image_model, hostedModelLabel(currentDeckImageModel));
+        nextSlide.image_repo_id = cleanText(nextSlide.image_repo_id, hostedModelRepo(currentDeckImageModel));
+        nextSlide.image_status = ['generated', 'cached'].includes(cleanText(nextSlide.image_status)) ? nextSlide.image_status : 'queued';
+        nextSlide.image_error = '';
+        return nextSlide;
+      });
+      deck.image_generation = {
+        ...(deck.image_generation || {}),
+        selected_style: cleanText(deck?.image_generation?.selected_style, currentDeckImageStyle),
+        selected_coverage: coverage,
+        selected_model: cleanText(deck?.image_generation?.selected_model, currentDeckImageModel),
+        style_options: deck?.image_generation?.style_options || FALLBACK_IMAGE_STYLE_OPTIONS,
+        coverage_options: deck?.image_generation?.coverage_options || FALLBACK_IMAGE_COVERAGE_OPTIONS,
+        supported_models: deck?.image_generation?.supported_models || FALLBACK_IMAGE_MODELS,
+        progressive_enabled: true,
+        pending_indices: selected
+      };
+      return deck;
+    }
+
+    function wait(ms) {
+      return new Promise(resolve => window.setTimeout(resolve, ms));
+    }
+
+    function blobToDataUrl(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(cleanText(reader.result));
+        reader.onerror = () => reject(reader.error || new Error('Failed to read image blob.'));
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function fetchHostedSlideImage(slide, index, attempt = 0) {
+      const prompt = cleanText(slide?.image_prompt, slide?.visual_suggestion || slide?.title);
+      if (!prompt) throw new Error('Missing slide image prompt.');
+      const providers = hostedCandidateModelsForSlide(slide);
+      const size = hostedImageRenderSize(slide);
+      const baseSeed = Number.isFinite(Number(slide?.image_seed)) ? Number(slide.image_seed) : (index + 1) * 1000;
+      const seed = Math.max(1, Math.round(baseSeed + (attempt * 7919)));
+      const rotatedProviders = providers.slice(attempt % providers.length).concat(providers.slice(0, attempt % providers.length));
+      const response = await fetch('/slides/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          provider_candidates: rotatedProviders,
+          seed,
+          size
+        })
+      });
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({}));
+        const message = cleanText(errorBody?.error) || cleanText(errorBody?.attempts?.[0]?.message);
+        const error = new Error(message || `Hosted image request failed (${response.status}).`);
+        error.status = response.status;
+        throw error;
+      }
+      const payload = await response.json();
+      const dataUrl = cleanText(payload?.image_url);
+      if (!dataUrl) throw new Error('Hosted image response was empty.');
+      return {
+        dataUrl,
+        providerModel: cleanText(payload?.image_repo_id).split('/').pop() || cleanText(payload?.image_model),
+      };
+    }
+
+    async function generateHostedImageForSlide(slide, index, jobToken) {
+      const providers = hostedCandidateModelsForSlide(slide);
+      const maxAttempts = Math.max(providers.length * 2, 4);
+      let lastError = null;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        if (jobToken !== currentDeckImageJob.token) return null;
+        try {
+          return await fetchHostedSlideImage(slide, index, attempt);
+        } catch (error) {
+          lastError = error;
+          const status = Number(error?.status || 0);
+          const retryable = !status || status === 429 || status >= 500;
+          if (!retryable) break;
+          await wait(8000 + (attempt * 4000));
+        }
+      }
+      throw lastError || new Error('Image generation failed.');
+    }
+
+    function rerenderCurrentDeck() {
+      renderSlides(currentDeckData, { preserveIndex: true, skipProgressiveImageGeneration: true });
+    }
+
+    async function startProgressiveHostedImageGeneration(jobToken) {
+      if (!currentDeckImageGeneration?.progressive_enabled) {
+        currentDeckImageJob.running = false;
+        renderVisualControls();
+        return;
+      }
+
+      const queue = pendingImageIndices(currentDeckData);
+      if (!queue.length) {
+        currentDeckImageJob.running = false;
+        renderVisualControls();
+        renderInspector();
+        return;
+      }
+      if (currentDeckImageJob.running && currentDeckImageJob.token === jobToken) return;
+
+      currentDeckImageJob = {
+        token: jobToken,
+        running: true,
+        total: queue.length,
+        completed: 0,
+        failed: 0,
+        activeIndex: queue[0]
+      };
+      renderVisualControls();
+      renderInspector();
+      showToast(`Generating ${queue.length} premium visual${queue.length === 1 ? '' : 's'}...`);
+
+      for (const slideIndex of queue) {
+        if (jobToken !== currentDeckImageJob.token) return;
+        const slide = currentDeckData.slides[slideIndex];
+        if (!slide) continue;
+        slide.image_status = 'generating';
+        slide.image_error = '';
+        currentDeckImageJob.activeIndex = slideIndex;
+        rerenderCurrentDeck();
+
+        try {
+          const result = await generateHostedImageForSlide(slide, slideIndex, jobToken);
+          if (!result || jobToken !== currentDeckImageJob.token) return;
+          Object.assign(slide, {
+            image_url: cleanText(result.dataUrl),
+            image_model: hostedModelLabel(result.providerModel),
+            image_repo_id: hostedModelRepo(result.providerModel),
+            image_status: 'generated',
+            image_error: ''
+          });
+        } catch (error) {
+          const fallbackUrl = cleanText(slide?.image_fallback_url);
+          if (fallbackUrl) {
+            Object.assign(slide, {
+              image_url: fallbackUrl,
+              image_model: cleanText(slide?.image_fallback_model, 'Editorial Illustration'),
+              image_repo_id: cleanText(slide?.image_fallback_repo_id, 'builtin/ventureos-editorial-scenes'),
+              image_status: 'fallback',
+              image_error: cleanText(error?.message, 'Hosted generation failed, so VentureOS used the slide fallback image.')
+            });
+          } else {
+            slide.image_status = 'failed';
+            slide.image_error = cleanText(error?.message, 'Image generation failed.');
+          }
+          currentDeckImageJob.failed += 1;
+        }
+
+        currentDeckImageJob.completed += 1;
+        rerenderCurrentDeck();
+      }
+
+      if (jobToken !== currentDeckImageJob.token) return;
+      currentDeckImageJob.running = false;
+      currentDeckImageJob.activeIndex = -1;
+      renderVisualControls();
+      renderInspector();
+      if (currentDeckImageJob.failed) {
+        showToast(`Premium visuals finished with ${currentDeckImageJob.failed} issue${currentDeckImageJob.failed === 1 ? '' : 's'}.`);
+      } else {
+        showToast('Premium slide visuals are ready.');
+      }
     }
 
     function buildLocalDeck(templateId) {
@@ -2587,7 +3331,7 @@
         };
       });
 
-      return {
+      return prepareDeckForProgressiveImages({
         title: cleanText(currentIdea, 'Pitch Deck'),
         subtitle: 'Locally generated from existing VentureOS analysis',
         meta: {
@@ -2599,7 +3343,7 @@
         slides,
         image_generation: {
           selected_style: currentDeckImageStyle,
-          selected_coverage: currentDeckImageCoverage,
+        selected_coverage: currentDeckImageCoverage,
           selected_model: currentDeckImageModel,
           style_options: FALLBACK_IMAGE_STYLE_OPTIONS,
           coverage_options: FALLBACK_IMAGE_COVERAGE_OPTIONS,
@@ -2607,7 +3351,7 @@
         },
         generation_mode: 'local-client',
         generation_notice: 'Using browser fallback deck. Refresh visuals after the local backend is available.'
-      };
+      });
     }
 
     function renderContentList(items) {
@@ -2632,13 +3376,13 @@
 
     function renderFeatureImagePanel(slide, options = {}) {
       const hasImage = Boolean(slide.image_url);
+      const isPending = !hasImage && ['queued', 'generating'].includes(cleanText(slide.image_status));
       const delay = Number.isFinite(options.delay) ? options.delay : 260;
       const kicker = cleanText(options.kicker, slide.type ? slideTypeLabel(slide.type) : 'Visual');
-      const caption = cleanText(
-        options.caption,
-        slide.visual_suggestion || slide.design_notes || 'Premium presentation visual'
-      );
-      const className = `slide-feature-media motion-item${hasImage ? '' : ' is-placeholder'}`;
+      const caption = presentationVisualSummary(slide);
+      const className = `slide-feature-media motion-item${hasImage ? '' : ' is-placeholder'}${isPending ? ' is-loading' : ''}`;
+      const pendingKicker = cleanText(options.pendingKicker, 'Generating Visual');
+      const pendingCaption = cleanText(options.pendingCaption, 'Rendering a topic-specific premium image for this slide.');
 
       return `
         <div class="${className}" style="--delay:${delay}ms;">
@@ -2647,8 +3391,8 @@
             : '<div class="slide-visual-orbit"></div>'}
           ${hasImage ? '' : `
           <div class="slide-feature-copy">
-            <div class="slide-feature-kicker">${escapeHtml(kicker)}</div>
-            <div class="slide-feature-caption">${escapeHtml(caption)}</div>
+            <div class="slide-feature-kicker">${escapeHtml(isPending ? pendingKicker : kicker)}</div>
+            <div class="slide-feature-caption">${escapeHtml(isPending ? pendingCaption : caption)}</div>
           </div>`}
         </div>`;
     }
@@ -2665,18 +3409,21 @@
 
     function renderVisualPanel(slide) {
       const hasImage = Boolean(slide.image_url);
+      const isPending = !hasImage && ['queued', 'generating'].includes(cleanText(slide.image_status));
       return `
         <div class="slide-visual-panel motion-item" style="--delay:320ms;">
           <div>
             <div class="slide-visual-label">Visual Direction</div>
-            <div class="slide-visual-title">${escapeHtml(slide.visual_suggestion || 'Use one strong visual anchor that clarifies the point instantly.')}</div>
+            <div class="slide-visual-title">${escapeHtml(presentationVisualSummary(slide))}</div>
           </div>
           <div class="slide-visual-media">
             ${hasImage
               ? `<img class="slide-generated-image" src="${escapeAttr(slide.image_url)}" alt="${escapeAttr(slide.title || 'Generated slide visual')}" crossorigin="anonymous" />`
               : '<div class="slide-visual-orbit"></div>'}
           </div>
-          ${hasImage ? '' : `<div class="slide-visual-caption">${escapeHtml(slide.design_notes || 'Use asymmetry, whitespace, and one dominant proof element.')}</div>`}
+          ${hasImage ? '' : `<div class="slide-visual-caption">${escapeHtml(isPending
+            ? 'Topic-specific premium image is rendering in the background.'
+            : presentationLayoutSummary(slide))}</div>`}
         </div>`;
     }
 
@@ -3025,7 +3772,7 @@
         : slide.visual_suggestion
           ? `<div class="motion-item" style="--delay:260ms;height:100%;padding:20px;border-radius:10px;background:rgba(var(--deck-accent-rgb),.06);border:1px solid rgba(var(--deck-accent-rgb),.14);display:flex;flex-direction:column;gap:12px;justify-content:center;">
               <div style="font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--deck-accent);opacity:.7;">Visual Direction</div>
-              <div style="font-size:13px;line-height:1.6;opacity:.7;color:var(--deck-text);">${escapeHtml(slide.visual_suggestion)}</div>
+              <div style="font-size:13px;line-height:1.6;opacity:.7;color:var(--deck-text);">${escapeHtml(presentationVisualSummary(slide))}</div>
             </div>`
           : '';
 
@@ -3181,13 +3928,14 @@
         </div>`;
     }
 
-        function renderInspector() {
+    function renderInspector() {
       const inspector = document.getElementById('slideInspector');
       const slide = currentDeckData.slides[currentSlideIndex];
       const meta = currentDeckData.meta;
       if (!slide || !meta) { inspector.innerHTML = ''; return; }
 
       const paletteEntries = Object.entries(meta.palette || {}).slice(0, 4);
+      const topicLabel = topicDisplayLabel(currentIdea, slide);
       inspector.innerHTML = `
         <div class="inspector-card">
           <div class="inspector-meta">
@@ -3198,12 +3946,13 @@
           <div class="inspector-card-copy">${escapeHtml(slide.objective || 'Clarify the narrative move of this slide.')}</div>
         </div>
         <div class="inspector-card">
-          <div class="inspector-card-title">Visual + Layout</div>
+          <div class="inspector-card-title">Visual Context</div>
           <ul class="inspector-note-list">
-            <li>${escapeHtml(slide.visual_suggestion || 'Lead with a single proof-driven visual.')}</li>
-            <li>${escapeHtml(slide.design_notes || 'Keep alignment disciplined and spacing generous.')}</li>
-            ${slide.image_status === 'failed' ? `<li>Image generation issue: ${escapeHtml(slide.image_error || 'Unknown error')}</li>` : ''}
-            ${!slide.image_url && slide.image_status !== 'failed' ? '<li>No image attached to this slide with the current coverage setting.</li>' : ''}
+            <li>Topic: ${escapeHtml(topicLabel)}</li>
+            <li>Image: ${escapeHtml(presentationVisualSummary(slide))}</li>
+            <li>Layout: ${escapeHtml(presentationLayoutSummary(slide))}</li>
+            <li>Status: ${escapeHtml(presentationImageStatusSummary(slide))}</li>
+            ${slide.image_status === 'failed' && slide.image_error ? `<li>Image issue: ${escapeHtml(slide.image_error)}</li>` : ''}
           </ul>
         </div>
         <div class="inspector-card">
@@ -3308,6 +4057,7 @@
       document.getElementById('slideDots').innerHTML = '';
       document.getElementById('slideInspector').innerHTML = '';
       slidesGenerated = false;
+      const deckImageJobToken = nextDeckImageJobToken();
       currentDeckData = { title: 'Pitch Deck', subtitle: '', meta: null, slides: [], image_generation: null, generation_mode: '', generation_notice: '' };
 
       try {
@@ -3338,17 +4088,17 @@
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         currentDeckTemplateId = nextTemplateId;
-        const deck = normalizeDeckPayload(data);
+        const deck = prepareDeckForProgressiveImages(normalizeDeckPayload(data));
         if (!deck.slides.length) throw new Error('No slides returned');
 
-        renderSlides(deck);
+        renderSlides(deck, { jobToken: deckImageJobToken });
         if (forceNewTemplate) showToast(`Switched to ${deck.meta?.theme_name || 'a new style'}.`);
         slidesGenerated = true;
       } catch(err) {
         console.error('Slide generation error:', err);
         const localDeck = buildLocalDeck(nextTemplateId);
         currentDeckTemplateId = nextTemplateId;
-        renderSlides(localDeck);
+        renderSlides(localDeck, { jobToken: deckImageJobToken });
         slidesGenerated = true;
         showToast(forceNewTemplate
           ? `Using local deck generation · ${localDeck.meta?.theme_name || 'New style'}`
@@ -3377,8 +4127,9 @@
       await generateSlides(false);
     }
 
-    function renderSlides(deck) {
+    function renderSlides(deck, options = {}) {
       currentDeckData = deck;
+      const preserveIndex = Boolean(options.preserveIndex);
       // currentDeckTemplateId is set BEFORE calling renderSlides (in generateSlides/selectTheme)
       // Don't override it from deck.meta — that locks it to whatever the server returned.
       // Just ensure we have a fallback if it's still empty.
@@ -3392,10 +4143,12 @@
       currentDeckImageCoverage = cleanText(deck.image_generation?.selected_coverage, currentDeckImageCoverage || 'key-slides');
       currentDeckImageModel = cleanText(
         deck.image_generation?.selected_model || deck.image_generation?.default_model,
-        currentDeckImageModel || 'lcm-dreamshaper-v7'
+        currentDeckImageModel || 'flux-studio'
       );
       totalSlides = deck.slides.length;
-      currentSlideIndex = 0;
+      currentSlideIndex = preserveIndex
+        ? Math.max(0, Math.min(totalSlides - 1, currentSlideIndex))
+        : 0;
 
       const wrap = document.getElementById('slideDeckWrap');
       const container = document.getElementById('slidesContainer');
@@ -3456,6 +4209,9 @@
       renderThemePills();
       renderVisualControls();
       updateSlideNav();
+      if (!options.skipProgressiveImageGeneration) {
+        void startProgressiveHostedImageGeneration(options.jobToken ?? currentDeckImageJob.token);
+      }
     }
 
         function goToSlide(index) {
@@ -4087,6 +4843,13 @@
 
     async function downloadPPTX() {
       if (!slidesGenerated || !currentDeckData.slides.length) { showToast('Generate slides first, then download PPTX.'); return; }
+      const pendingImages = (currentDeckData?.slides || []).filter(
+        slide => ['queued', 'generating'].includes(cleanText(slide?.image_status))
+      ).length;
+      if (pendingImages) {
+        showToast(`Wait for ${pendingImages} premium visual${pendingImages === 1 ? '' : 's'} to finish before exporting PPT.`);
+        return;
+      }
       showToast('⏳ Building editable PPTX...');
 
       try {

@@ -9,6 +9,7 @@ import re
 import uuid
 import io
 import random
+import math
 import tempfile
 import base64
 import html
@@ -16,7 +17,14 @@ import threading
 from io import BytesIO
 from urllib.parse import quote
 from urllib.request import Request, urlopen
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
+
+try:
+    from google import genai as google_genai
+    from google.genai import types as google_genai_types
+except ImportError:  # pragma: no cover - optional runtime dependency
+    google_genai = None
+    google_genai_types = None
 
 load_dotenv()
 
@@ -28,22 +36,167 @@ IMAGE_GENERATION_AVAILABLE = True
 IMAGE_GENERATION_IMPORT_ERROR = 'Using built-in illustrated slide visuals for this deployment.'
 IMAGE_GENERATION_IS_FALLBACK = True
 FALLBACK_IMAGE_MODEL_KEY = 'flux-studio'
-FALLBACK_IMAGE_MODEL_LABEL = 'Flux Studio'
-FALLBACK_VECTOR_MODEL_LABEL = 'Editorial Illustration'
+FALLBACK_IMAGE_MODEL_LABEL = 'VentureOS Neon Editorial'
+FALLBACK_VECTOR_MODEL_LABEL = 'VentureOS Neon Editorial'
 HOSTED_FALLBACK_TIMEOUT_SECONDS = float(os.getenv('VENTUREOS_HOSTED_IMAGE_TIMEOUT_SECONDS', '45'))
 HOSTED_FALLBACK_ENABLED = os.getenv(
     'VENTUREOS_HOSTED_IMAGE_ENABLED', 'true'
 ).strip().lower() not in {'0', 'false', 'no', 'off'}
+GOOGLE_IMAGE_ENABLED = (
+    bool(os.getenv('GOOGLE_API_KEY', '').strip())
+    and google_genai is not None
+    and google_genai_types is not None
+    and os.getenv('VENTUREOS_GOOGLE_IMAGE_ENABLED', 'true').strip().lower() not in {'0', 'false', 'no', 'off'}
+)
 _HOSTED_IMAGE_CACHE = {}
 _HOSTED_IMAGE_CACHE_LOCK = threading.Lock()
+_GOOGLE_IMAGE_CLIENT = None
+_GOOGLE_IMAGE_CLIENT_LOCK = threading.Lock()
+
+HOSTED_FALLBACK_MODEL_VARIANTS = {
+    'ventureos-editorial': {
+        'label': 'VentureOS Neon Editorial',
+        'repo_id': 'builtin/ventureos-neon-editorial',
+    },
+    'google-imagen': {
+        'label': 'Google Imagen',
+        'repo_id': 'google/imagen-4.0-generate-001',
+    },
+    'google-imagen-fast': {
+        'label': 'Google Imagen Fast',
+        'repo_id': 'google/imagen-4.0-fast-generate-001',
+    },
+    'editorial-mix': {
+        'label': 'Editorial Mix',
+        'repo_id': 'pollinations/editorial-mix',
+    },
+    'flux-studio': {
+        'label': 'Flux Studio',
+        'repo_id': 'pollinations/flux',
+    },
+    'qwen-editorial': {
+        'label': 'Qwen Editorial',
+        'repo_id': 'pollinations/qwen-image',
+    },
+    'gptimage-editorial': {
+        'label': 'GPTImage Editorial',
+        'repo_id': 'pollinations/gptimage',
+    },
+}
+
+HOSTED_PROVIDER_LABELS = {
+    'google-imagen': 'Google Imagen',
+    'google-imagen-fast': 'Google Imagen Fast',
+    'flux': 'Flux Studio',
+    'qwen-image': 'Qwen Editorial',
+    'gptimage': 'GPTImage Editorial',
+}
+
+HOSTED_PROVIDER_REPOS = {
+    'google-imagen': 'google/imagen-4.0-generate-001',
+    'google-imagen-fast': 'google/imagen-4.0-fast-generate-001',
+    'flux': 'pollinations/flux',
+    'qwen-image': 'pollinations/qwen-image',
+    'gptimage': 'pollinations/gptimage',
+}
+
+PREMIUM_FALLBACK_MODEL_LABEL = 'VentureOS Premium Scene Library'
+PREMIUM_FALLBACK_MODEL_REPO = 'local/premium-scene-library'
+PREMIUM_FALLBACK_DIRECT_TOPICS = {'gaming', 'housing'}
+PREMIUM_FALLBACK_LIBRARY = {
+    'gaming': [
+        'gaming-hero-a.jpg',
+        'gaming-hero-b.jpg',
+        'gaming-hero-c.jpg',
+        'gaming-hero-d.jpg',
+    ],
+    'software': [
+        'gaming-hero-b.jpg',
+        'gaming-hero-c.jpg',
+        'gaming-hero-a.jpg',
+        'gaming-hero-d.jpg',
+    ],
+    'sports': [
+        'gaming-hero-d.jpg',
+        'gaming-hero-a.jpg',
+        'gaming-hero-c.jpg',
+    ],
+    'housing': [
+        'housing-atrium-a.jpg',
+        'housing-atrium-b.jpg',
+        'housing-atrium-c.jpg',
+        'interior-sunlit-a.jpg',
+        'interior-sunlit-b.jpg',
+    ],
+    'education': [
+        'interior-sunlit-b.jpg',
+        'housing-atrium-a.jpg',
+        'interior-sunlit-c.jpg',
+        'housing-atrium-c.jpg',
+        'housing-atrium-b.jpg',
+    ],
+    'restaurant': [
+        'interior-sunlit-c.jpg',
+        'housing-atrium-a.jpg',
+        'interior-sunlit-d.jpg',
+        'interior-sunlit-a.jpg',
+    ],
+    'health': [
+        'interior-sunlit-a.jpg',
+        'interior-sunlit-b.jpg',
+        'interior-sunlit-d.jpg',
+        'housing-atrium-b.jpg',
+    ],
+    'finance': [
+        'interior-sunlit-b.jpg',
+        'gaming-hero-b.jpg',
+        'interior-sunlit-d.jpg',
+        'interior-sunlit-a.jpg',
+    ],
+    'logistics': [
+        'interior-sunlit-c.jpg',
+        'interior-sunlit-b.jpg',
+        'interior-sunlit-d.jpg',
+        'gaming-hero-d.jpg',
+    ],
+    'generic': [
+        'gaming-hero-a.jpg',
+        'housing-atrium-a.jpg',
+        'interior-sunlit-a.jpg',
+        'gaming-hero-b.jpg',
+        'interior-sunlit-b.jpg',
+        'housing-atrium-c.jpg',
+        'housing-atrium-b.jpg',
+        'interior-sunlit-d.jpg',
+    ],
+}
+
+PREMIUM_FALLBACK_ASSET_TAGS = {
+    'gaming-hero-a.jpg': ['gaming', 'creator', 'developer', 'studio', 'collectibles', 'shelves', 'premium'],
+    'gaming-hero-b.jpg': ['gaming', 'software', 'dashboard', 'workflow', 'interface', 'analytics', 'creator'],
+    'gaming-hero-c.jpg': ['gaming', 'creator', 'studio', 'craft', 'tools', 'workspace', 'premium'],
+    'gaming-hero-d.jpg': ['gaming', 'strategy', 'operations', 'display', 'workspace', 'premium'],
+    'housing-atrium-a.jpg': ['housing', 'apartment', 'interior', 'student', 'atrium', 'urban', 'lounge'],
+    'housing-atrium-b.jpg': ['housing', 'apartment', 'interior', 'residential', 'sunlight', 'modern', 'lounge'],
+    'housing-atrium-c.jpg': ['housing', 'apartment', 'interior', 'student', 'residential', 'study', 'modern'],
+    'interior-sunlit-a.jpg': ['interior', 'housing', 'education', 'health', 'workspace', 'clean', 'modern'],
+    'interior-sunlit-b.jpg': ['interior', 'software', 'finance', 'workspace', 'clean', 'modern', 'premium'],
+    'interior-sunlit-c.jpg': ['interior', 'restaurant', 'operations', 'inventory', 'warm', 'supply', 'premium'],
+    'interior-sunlit-d.jpg': ['interior', 'logistics', 'operations', 'structured', 'workspace', 'modern', 'premium'],
+}
 
 
 def _fallback_supported_models():
-    return [{
-        'key': FALLBACK_IMAGE_MODEL_KEY,
-        'repo_id': 'pollinations/flux',
-        'label': FALLBACK_IMAGE_MODEL_LABEL,
-    }]
+    ordered_keys = ['flux-studio', 'ventureos-editorial']
+    return [
+        {
+            'key': key,
+            'repo_id': HOSTED_FALLBACK_MODEL_VARIANTS[key]['repo_id'],
+            'label': HOSTED_FALLBACK_MODEL_VARIANTS[key]['label'],
+        }
+        for key in ordered_keys
+        if key in HOSTED_FALLBACK_MODEL_VARIANTS
+    ]
 
 
 def _fallback_style_options():
@@ -51,7 +204,7 @@ def _fallback_style_options():
         {'key': 'deck-illustration', 'label': 'Presentation Illustration'},
         {'key': 'animated-scene', 'label': 'Animated Scene'},
         {'key': 'cartoon', 'label': 'Cartoon'},
-        {'key': 'abstract', 'label': 'Abstract Scenic'},
+        {'key': 'abstract', 'label': 'Neon Editorial'},
     ]
 
 
@@ -79,6 +232,74 @@ def _fallback_hash_seed(*parts):
     return total or 1
 
 
+def _fallback_model_variant(model_key):
+    return HOSTED_FALLBACK_MODEL_VARIANTS.get(
+        _fallback_clean_text(model_key, FALLBACK_IMAGE_MODEL_KEY).lower(),
+        HOSTED_FALLBACK_MODEL_VARIANTS[FALLBACK_IMAGE_MODEL_KEY],
+    )
+
+
+def _fallback_provider_candidates(model_key, slide_type, index):
+    model_key = _fallback_clean_text(model_key, FALLBACK_IMAGE_MODEL_KEY).lower()
+    slide_type = _fallback_clean_text(slide_type, 'story').lower()
+
+    if model_key == 'ventureos-editorial':
+        return []
+    if model_key in {'google-imagen', 'google-imagen-fast'}:
+        return [model_key]
+    if model_key == 'flux-studio':
+        return ['flux']
+    if model_key == 'qwen-editorial':
+        return ['qwen-image']
+    if model_key == 'gptimage-editorial':
+        return ['gptimage']
+
+    thematic_order = {
+        'hook': ['flux', 'gptimage', 'qwen-image'],
+        'problem': ['flux', 'qwen-image', 'gptimage'],
+        'stakes': ['flux', 'qwen-image', 'gptimage'],
+        'solution': ['flux', 'gptimage', 'qwen-image'],
+        'how_it_works': ['qwen-image', 'flux', 'gptimage'],
+        'impact': ['flux', 'gptimage', 'qwen-image'],
+        'proof': ['flux', 'gptimage', 'qwen-image'],
+        'business_model': ['qwen-image', 'flux', 'gptimage'],
+        'vision': ['flux', 'gptimage', 'qwen-image'],
+        'call_to_action': ['flux', 'gptimage', 'qwen-image'],
+    }
+    ordered = thematic_order.get(slide_type, ['flux', 'gptimage', 'qwen-image'])
+    rotation = index % len(ordered)
+    return ordered[rotation:] + ordered[:rotation]
+
+
+def _fallback_provider_label(provider_model):
+    return HOSTED_PROVIDER_LABELS.get(provider_model, FALLBACK_IMAGE_MODEL_LABEL)
+
+
+def _fallback_provider_repo(provider_model):
+    return HOSTED_PROVIDER_REPOS.get(provider_model, 'builtin/ventureos-neon-editorial')
+
+
+def _google_image_model_name(provider_model):
+    model_names = {
+        'google-imagen': 'imagen-4.0-generate-001',
+        'google-imagen-fast': 'imagen-4.0-fast-generate-001',
+    }
+    return model_names.get(provider_model, 'imagen-4.0-generate-001')
+
+
+def _get_google_image_client():
+    if not GOOGLE_IMAGE_ENABLED:
+        raise RuntimeError('Google image generation is unavailable')
+
+    global _GOOGLE_IMAGE_CLIENT
+    with _GOOGLE_IMAGE_CLIENT_LOCK:
+        if _GOOGLE_IMAGE_CLIENT is None:
+            _GOOGLE_IMAGE_CLIENT = google_genai.Client(
+                api_key=os.getenv('GOOGLE_API_KEY', '').strip()
+            )
+    return _GOOGLE_IMAGE_CLIENT
+
+
 def _fallback_image_palette(style_key):
     palettes = {
         'deck-illustration': {
@@ -97,12 +318,36 @@ def _fallback_image_palette(style_key):
             'panel': '#17314A', 'panel2': '#21415F'
         },
         'abstract': {
-            'bg0': '#111827', 'bg1': '#1F2937', 'bg2': '#374151',
-            'accent': '#34D399', 'accent2': '#60A5FA', 'line': '#ECFEFF',
-            'panel': '#172033', 'panel2': '#24314D'
+            'bg0': '#070915', 'bg1': '#0B1024', 'bg2': '#1A1033',
+            'accent': '#FF8A3D', 'accent2': '#57C7FF', 'line': '#FFD9A1',
+            'panel': '#12152F', 'panel2': '#1B2147'
         },
     }
-    return palettes.get(style_key) or palettes['deck-illustration']
+    return palettes.get(style_key) or palettes['abstract']
+
+
+def _fallback_style_family(style_key):
+    style_key = _fallback_clean_text(style_key, 'deck-illustration').lower()
+    if style_key in {'abstract', 'auto'}:
+        return 'abstract'
+    if style_key in {'deck-illustration', 'illustration', 'product-mockup', '3d-render'}:
+        return 'presentation'
+    if style_key == 'animated-scene':
+        return 'animated'
+    if style_key == 'cartoon':
+        return 'cartoon'
+    return 'presentation'
+
+
+def _fallback_style_model_meta(style_key):
+    family = _fallback_style_family(style_key)
+    mapping = {
+        'abstract': ('VentureOS Neon Editorial', 'builtin/ventureos-neon-editorial'),
+        'presentation': ('VentureOS Presentation Illustration', 'builtin/ventureos-presentation-illustration'),
+        'animated': ('VentureOS Animated Scene', 'builtin/ventureos-animated-scene'),
+        'cartoon': ('VentureOS Cartoon Illustration', 'builtin/ventureos-cartoon-scene'),
+    }
+    return mapping.get(family, mapping['abstract'])
 
 
 def _fallback_select_image_slide_indices(slides, image_options):
@@ -167,26 +412,171 @@ def _fallback_topic_bucket(idea, slide):
         _fallback_clean_text(slide.get('objective')),
     ]).lower()
 
-    buckets = [
-        ('gaming', ['game', 'gaming', 'indie', 'developer', 'studio', 'creator', 'player', 'stream']),
-        ('restaurant', ['restaurant', 'kitchen', 'food', 'menu', 'inventory', 'dining', 'hospitality', 'grocery']),
-        ('housing', ['housing', 'sublease', 'rent', 'rental', 'apartment', 'student housing', 'property', 'real estate']),
-        ('health', ['health', 'medical', 'patient', 'clinic', 'biotech', 'dermatitis', 'care', 'diagnostic']),
-        ('sports', ['sports', 'football', 'nfl', 'team', 'season', 'stadium', 'league']),
-        ('finance', ['finance', 'fintech', 'payment', 'billing', 'revenue', 'bank', 'credit', 'insurance']),
-        ('education', ['education', 'learning', 'student', 'school', 'college', 'course', 'training']),
-        ('logistics', ['logistics', 'warehouse', 'supply', 'shipping', 'delivery', 'fleet', 'procurement']),
-        ('software', ['ai', 'agent', 'software', 'saas', 'platform', 'automation', 'analytics', 'dashboard']),
-    ]
+    weighted_buckets = {
+        'housing': {
+            'housing': 6, 'sublease': 8, 'sublessee': 8, 'subleaser': 8, 'rent': 4, 'rental': 4, 'rentals': 4,
+            'apartment': 6, 'apartments': 6, 'student housing': 9, 'lease': 5, 'leasing': 5, 'tenant': 5,
+            'tenants': 5, 'roommate': 5, 'roommates': 5, 'landlord': 5, 'property': 4, 'real estate': 5, 'move-in': 5,
+        },
+        'health': {
+            'health': 4, 'medical': 8, 'medicine': 8, 'med school': 8, 'medical school': 10, 'patient': 6, 'patients': 6,
+            'clinic': 6, 'biotech': 6, 'dermatitis': 7, 'care': 4, 'diagnostic': 6, 'doctor': 6, 'nurse': 6,
+            'hospital': 7, 'anatomy': 7, 'physiology': 7, 'clinical': 7,
+        },
+        'education': {
+            'education': 5, 'learning': 5, 'student': 4, 'students': 4, 'school': 4, 'college': 4, 'course': 5,
+            'training': 5, 'research': 4, 'tutor': 7, 'tutoring': 7, 'teacher': 5, 'classroom': 4, 'study': 5,
+        },
+        'gaming': {
+            'game': 6, 'gaming': 6, 'indie': 5, 'developer': 5, 'dev': 4, 'studio': 4, 'creator': 4, 'player': 3, 'stream': 2, 'steam': 4,
+        },
+        'restaurant': {
+            'restaurant': 7, 'kitchen': 5, 'food': 4, 'menu': 4, 'inventory': 6, 'dining': 5, 'hospitality': 5, 'grocery': 4, 'ingredients': 5, 'chef': 5,
+        },
+        'sports': {
+            'sports': 6, 'football': 6, 'nfl': 7, 'team': 4, 'season': 4, 'stadium': 5, 'league': 4,
+        },
+        'finance': {
+            'finance': 6, 'fintech': 7, 'payment': 6, 'payments': 6, 'billing': 5, 'revenue': 4, 'bank': 5, 'credit': 4, 'insurance': 5, 'subscription': 4,
+        },
+        'logistics': {
+            'logistics': 7, 'warehouse': 6, 'supply': 5, 'shipping': 6, 'delivery': 6, 'fleet': 5, 'procurement': 5, 'routing': 5,
+        },
+        'software': {
+            'ai': 3, 'agent': 4, 'software': 6, 'saas': 6, 'platform': 5, 'automation': 6, 'analytics': 5, 'dashboard': 5, 'workflow': 5, 'app': 3, 'tool': 3,
+        },
+    }
+    medical_terms = ('medical', 'medicine', 'med school', 'medical school', 'clinical', 'anatomy', 'physiology', 'doctor', 'nurse', 'hospital')
+    learning_terms = ('student', 'students', 'school', 'college', 'learning', 'tutor', 'tutoring', 'study', 'training')
 
     best_bucket = 'generic'
     best_score = 0
-    for bucket, keywords in buckets:
-        score = sum(1 for keyword in keywords if keyword in corpus)
+    for bucket, keywords in weighted_buckets.items():
+        score = sum(weight for keyword, weight in keywords.items() if keyword in corpus)
+        if bucket == 'health' and any(term in corpus for term in medical_terms) and any(term in corpus for term in learning_terms):
+            score += 10
+        if bucket == 'education' and 'student housing' in corpus:
+            score -= 6
         if score > best_score:
             best_bucket = bucket
             best_score = score
     return best_bucket
+
+
+def _premium_fallback_asset_candidates(topic, idea='', slide=None):
+    topic = _fallback_clean_text(topic, 'generic').lower()
+    candidates = list(PREMIUM_FALLBACK_LIBRARY.get(topic) or [])
+    if topic not in {'generic'}:
+        candidates.extend(PREMIUM_FALLBACK_LIBRARY.get('generic', []))
+
+    focus_terms = _fallback_extract_focus_terms(idea, slide or {}, limit=8)
+    focus_tokens = set()
+    for term in focus_terms:
+        focus_tokens.update(re.findall(r'[a-z][a-z0-9-]{1,}', _fallback_clean_text(term).lower()))
+    focus_tokens.add(topic)
+    focus_tokens.update({
+        'housing': {'apartment', 'interior', 'student', 'lease', 'sublease', 'renter', 'residential'},
+        'gaming': {'creator', 'studio', 'developer', 'dev', 'collectible', 'tool'},
+        'software': {'workflow', 'dashboard', 'automation', 'platform', 'product'},
+        'finance': {'payment', 'billing', 'ledger', 'market', 'exchange'},
+        'restaurant': {'inventory', 'kitchen', 'dining', 'supply', 'operations'},
+        'health': {'care', 'clinical', 'diagnostic', 'wellness', 'medical'},
+        'education': {'campus', 'learning', 'research', 'student', 'academic'},
+        'logistics': {'routing', 'warehouse', 'fleet', 'distribution', 'supply'},
+        'sports': {'stadium', 'team', 'strategy', 'performance', 'athletic'},
+    }.get(topic, set()))
+
+    seen = set()
+    ordered = []
+    for item in candidates:
+        if item and item not in seen:
+            seen.add(item)
+            ordered.append(item)
+
+    def asset_score(asset_name):
+        tags = set(PREMIUM_FALLBACK_ASSET_TAGS.get(asset_name, []))
+        score = 0
+        if topic in tags:
+            score += 12
+        score += sum(3 for token in focus_tokens if token in tags)
+        if topic in {'housing', 'education', 'restaurant', 'health'} and 'interior' in tags:
+            score += 2
+        if topic in {'software', 'finance', 'gaming'} and {'dashboard', 'workflow', 'studio', 'creator'} & tags:
+            score += 2
+        return score
+
+    return [
+        asset_name
+        for _, _, asset_name in sorted(
+            [(asset_score(asset_name), idx, asset_name) for idx, asset_name in enumerate(ordered)],
+            key=lambda item: (-item[0], item[1])
+        )
+    ]
+
+
+def _premium_fallback_asset_path(asset_name):
+    if not asset_name:
+        return ''
+    return os.path.join(app.root_path, 'static', 'premium_fallback', asset_name)
+
+
+def _premium_fallback_variant_from_style(style_key):
+    family = _fallback_style_family(style_key)
+    if family == 'animated':
+        return 'animated'
+    if family == 'cartoon':
+        return 'cartoon'
+    return 'presentation'
+
+
+def _premium_fallback_image_meta(idea, slide, index, image_options=None):
+    slide = slide or {}
+    style_key = _fallback_clean_text((image_options or {}).get('style'), 'deck-illustration').lower()
+    topic = _fallback_topic_bucket(idea, slide)
+    if topic not in PREMIUM_FALLBACK_DIRECT_TOPICS:
+        return None
+    slide_type = _fallback_clean_text(slide.get('type'), 'story').lower()
+    asset_candidates = _premium_fallback_asset_candidates(topic, idea=idea, slide=slide)
+    if not asset_candidates:
+        return None
+
+    asset_name = asset_candidates[index % len(asset_candidates)]
+    asset_path = _premium_fallback_asset_path(asset_name)
+    if not asset_path or not os.path.exists(asset_path):
+        return None
+
+    palette = _fallback_image_palette(style_key)
+    variant = _premium_fallback_variant_from_style(style_key)
+    focus_x, focus_y = _fallback_scene_focus_for_slide_type(slide_type)
+    with Image.open(asset_path) as source_image:
+        scene = source_image.convert('RGB')
+        scene = _fallback_apply_scene_treatment(scene, palette, variant)
+        scene = _fallback_resize_cover(scene, (1024, 1024), focus_x=focus_x, focus_y=focus_y)
+
+    subject_brief = _fallback_slide_subject_brief(topic, slide_type, index=index)
+    return {
+        'image_url': _fallback_image_to_data_url(scene, fmt='JPEG', quality=92),
+        'image_prompt': subject_brief,
+        'image_model': PREMIUM_FALLBACK_MODEL_LABEL,
+        'image_repo_id': PREMIUM_FALLBACK_MODEL_REPO,
+        'image_status': 'generated',
+        'image_error': '',
+    }
+
+
+def _best_available_fallback_image_meta(idea, slide, index, image_options=None, hosted_error=''):
+    premium_meta = _premium_fallback_image_meta(idea, slide, index, image_options=image_options)
+    if premium_meta:
+        if hosted_error:
+            premium_meta['image_error'] = hosted_error
+        return premium_meta
+    return _fallback_generate_vector_image_meta(
+        idea=idea,
+        slide=slide,
+        index=index,
+        image_options=image_options,
+        hosted_error=hosted_error,
+    )
 
 
 def _fallback_topic_subject(topic):
@@ -194,7 +584,7 @@ def _fallback_topic_subject(topic):
         'gaming': 'indie game creator studio, premium collectibles, glowing dev setup, atmospheric shelves, cinematic environment art',
         'restaurant': 'refined restaurant operations scene, chef pass, inventory shelves, premium hospitality workspace, cinematic still life',
         'housing': 'student housing search environment, elevated apartment interiors, urban architecture, leasing journey concept art',
-        'health': 'premium healthcare concept scene, diagnostic workspace, medical lab environment, thoughtful editorial composition',
+        'health': 'premium medical learning and healthcare concept scene, anatomy study cues, clinical tutoring atmosphere, thoughtful editorial composition',
         'sports': 'dramatic sports operations environment, strategy room, stadium energy, premium athletic editorial scene',
         'finance': 'premium fintech operations scene, sophisticated financial workspace, screens and objects, editorial mood',
         'education': 'modern learning studio, thoughtful academic environment, premium educational editorial scene',
@@ -205,17 +595,299 @@ def _fallback_topic_subject(topic):
     return subjects.get(topic, subjects['generic'])
 
 
+def _fallback_topic_abstract_subject(topic):
+    subjects = {
+        'gaming': 'stylized indie game studio editorial scene with creator energy, premium neon rim light, and polished synthwave mood',
+        'restaurant': 'stylized restaurant operations editorial scene with supply cues, premium neon accents, and cinematic rhythm',
+        'housing': 'stylized student housing editorial scene with modern apartment architecture, search cues, and premium neon wayfinding light',
+        'health': 'stylized medical learning editorial scene with anatomy cues, clinical confidence, and premium neon highlights',
+        'sports': 'stylized sports strategy editorial scene with route energy, performance atmosphere, and premium neon accents',
+        'finance': 'stylized fintech editorial scene with exchange energy, elegant market cues, and premium neon highlights',
+        'education': 'stylized learning editorial scene with research cues, academic aspiration, and premium neon accents',
+        'logistics': 'stylized logistics editorial scene with routing energy, distribution cues, and premium neon highlights',
+        'software': 'stylized product-tech editorial scene with workflow cards, intelligent automation cues, and premium neon accents',
+        'generic': 'premium neon editorial scene with one clear subject, atmospheric depth, and polished presentation energy',
+    }
+    return subjects.get(topic, subjects['generic'])
+
+
+_FALLBACK_VISUAL_STOPWORDS = {
+    'about', 'across', 'after', 'agent', 'agents', 'analysis', 'because', 'brand', 'business', 'call',
+    'chart', 'company', 'customer', 'customers', 'deck', 'for', 'future', 'growth', 'idea', 'impact', 'include',
+    'investor', 'key', 'market', 'model', 'more', 'need', 'next', 'offer', 'pitch', 'platform', 'problem',
+    'product', 'proof', 'reliable', 'revenue', 'risk', 'roadmap', 'show', 'slide', 'slides', 'solution',
+    'startup', 'story', 'system', 'team', 'their', 'these', 'this', 'title', 'traction', 'value', 'vision',
+    'what', 'with', 'your', 'users'
+}
+
+_FALLBACK_VISUAL_MOTIFS = {
+    'gaming': [
+        'controller silhouettes', 'concept art panels', 'creator workbench', 'asset shelves', 'code monitors', 'dev tool glow'
+    ],
+    'restaurant': [
+        'ingredient crates', 'scanner pulses', 'prep surfaces', 'supply shelves', 'menu-card silhouettes', 'service counters'
+    ],
+    'housing': [
+        'apartment facades', 'map pins', 'keys', 'room cards', 'leasing routes', 'urban residential interiors'
+    ],
+        'health': [
+            'care glyphs', 'pulse rings', 'diagnostic panels', 'clinic interiors', 'anatomy study cues', 'medical device silhouettes'
+        ],
+    'sports': [
+        'stadium arcs', 'play routes', 'training dashboards', 'team strategy boards', 'score pulses', 'athletic path lines'
+    ],
+    'finance': [
+        'payment cards', 'ledger routes', 'market graphs', 'wallet tokens', 'trading panels', 'exchange signals'
+    ],
+    'education': [
+        'campus silhouettes', 'learning cards', 'book forms', 'idea bulbs', 'student pathways', 'research markers'
+    ],
+    'logistics': [
+        'route maps', 'package nodes', 'warehouse racks', 'tracking lines', 'fleet silhouettes', 'distribution hubs'
+    ],
+    'software': [
+        'workflow cards', 'automation routes', 'product panels', 'node graphs', 'data tiles', 'clean UI blocks'
+    ],
+    'generic': [
+        'premium interface cards', 'signal paths', 'editorial depth', 'clean product silhouettes', 'system nodes', 'ambient glow'
+    ],
+}
+
+_FALLBACK_SLIDE_SUBJECTS = {
+    'hook': {
+        'housing': 'student housing discovery scene with modern apartment architecture and trusted search cues',
+        'gaming': 'indie game creator studio scene with polished dev energy and collectible craft',
+        'restaurant': 'restaurant operations command scene with premium hospitality rhythm and inventory control',
+        'health': 'medical learning mission scene with clinical confidence and guided study atmosphere',
+        'sports': 'sports intelligence scene with strategy energy and performance momentum',
+        'finance': 'fintech mission scene with premium transaction energy and market confidence',
+        'education': 'learning platform mission scene with aspirational academic energy',
+        'logistics': 'logistics mission scene with global routing energy and operational precision',
+        'software': 'software platform mission scene with product confidence and intelligent automation',
+        'generic': 'premium startup mission scene with a clear modern focal subject',
+    },
+    'problem': {
+        'housing': 'student renters facing fragmented apartment search and unreliable sublease discovery',
+        'gaming': 'indie creators struggling with scattered tools and limited distribution support',
+        'restaurant': 'restaurant teams navigating stock gaps and operational friction',
+        'health': 'medical learners facing fragmented study support and low-confidence mastery',
+        'sports': 'teams dealing with fragmented decision data and unclear performance signals',
+        'finance': 'finance operators facing fragmented ledgers and trust friction',
+        'education': 'learners facing fragmented guidance and low clarity',
+        'logistics': 'operators navigating broken routing visibility and supply friction',
+        'software': 'teams facing disconnected systems and manual workflow friction',
+        'generic': 'teams facing fragmented workflows and avoidable operational friction',
+    },
+    'stakes': {
+        'generic': 'the scale and urgency of the market opportunity with strong outcome pressure'
+    },
+    'solution': {
+        'housing': 'verified housing-matching product scene with trusted listings and guided move-in flow',
+        'gaming': 'creator platform scene with curated resources, launch tools, and premium support',
+        'restaurant': 'inventory intelligence scene with cleaner kitchen operations and decision support',
+        'health': 'medical tutoring scene with guided mastery, anatomy cues, and confident study support',
+        'sports': 'sports intelligence scene with clearer coaching signals and confident decisions',
+        'finance': 'fintech solution scene with smoother flows and confident transaction design',
+        'education': 'learning solution scene with guided discovery and progress clarity',
+        'logistics': 'supply-chain control scene with clean routing and tracking precision',
+        'software': 'automation platform scene with elegant workflow orchestration and product clarity',
+        'generic': 'premium solution scene with a confident product-led outcome',
+    },
+    'how_it_works': {
+        'generic': 'connected workflow scene showing how the system moves from input to outcome'
+    },
+    'impact': {
+        'generic': 'outcome scene showing measurable progress, adoption, and value creation'
+    },
+    'proof': {
+        'generic': 'credible traction scene with demand signals, usage proof, and trustworthy momentum'
+    },
+    'business_model': {
+        'generic': 'commercial system scene with pricing layers, exchange flows, and monetization clarity'
+    },
+    'vision': {
+        'generic': 'future-state scene with aspirational scale, elegance, and category leadership'
+    },
+    'call_to_action': {
+        'generic': 'closing brand scene with a focused emblem, decisive energy, and premium finality'
+    },
+}
+
+
+def _fallback_extract_focus_terms(idea, slide, limit=5):
+    slide = slide or {}
+    corpus = ' '.join([
+        _fallback_clean_text(idea),
+        _fallback_clean_text(slide.get('title')),
+        _fallback_clean_text(slide.get('subtitle')),
+        _fallback_clean_text(slide.get('objective')),
+        _fallback_clean_text(slide.get('visual_suggestion')),
+        ' '.join(_fallback_clean_text(item) for item in (slide.get('content') or [])),
+    ]).lower()
+    tokens = re.findall(r'[a-z][a-z0-9-]{2,}', corpus)
+    terms = []
+    seen = set()
+    for token in tokens:
+        normalized = token.replace('-', ' ')
+        if normalized in seen or normalized in _FALLBACK_VISUAL_STOPWORDS:
+            continue
+        if normalized.endswith('s') and len(normalized) > 4:
+            singular = normalized[:-1]
+            if singular not in seen and singular not in _FALLBACK_VISUAL_STOPWORDS:
+                normalized = singular
+        if normalized in seen or normalized in _FALLBACK_VISUAL_STOPWORDS:
+            continue
+        seen.add(normalized)
+        terms.append(normalized)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
+def _fallback_topic_motifs(topic, index=0, limit=3):
+    motifs = _FALLBACK_VISUAL_MOTIFS.get(topic) or _FALLBACK_VISUAL_MOTIFS['generic']
+    if not motifs:
+        return []
+    rotation = index % len(motifs)
+    ordered = motifs[rotation:] + motifs[:rotation]
+    return ordered[:limit]
+
+
+def _fallback_slide_subject_brief(topic, slide_type, index=0):
+    slide_type = _fallback_clean_text(slide_type, 'story').lower()
+    topic_subjects = _FALLBACK_SLIDE_SUBJECTS.get(slide_type) or {}
+    subject = topic_subjects.get(topic) or topic_subjects.get('generic')
+    if subject:
+        return subject
+
+    generic_subjects = {
+        'hook': 'premium mission-driven startup scene with one dominant focal subject',
+        'problem': 'friction-filled scene that makes the core problem instantly legible',
+        'stakes': 'market-scale scene that communicates urgency and consequence',
+        'solution': 'clean product-world scene that feels organized and trustworthy',
+        'how_it_works': 'connected system scene with modular steps and clear flow',
+        'impact': 'success-state scene with outcome-driven momentum and value',
+        'proof': 'credible traction scene with anchored evidence and trust',
+        'business_model': 'commercial system scene with monetization layers and routes',
+        'vision': 'future-state category scene with scale and aspiration',
+        'call_to_action': 'closing brand scene with decisive energy and confidence',
+    }
+    return generic_subjects.get(slide_type, 'premium topic-faithful scene with a clear central subject')
+
+
+def _presentation_visual_summary(idea, slide, index=0):
+    slide = slide or {}
+    topic = _fallback_topic_bucket(idea, slide)
+    slide_type = _fallback_clean_text(slide.get('type'), 'story').lower()
+    summaries = {
+        'gaming': {
+            'hook': 'Creator studio hero scene',
+            'problem': 'Scattered tooling friction scene',
+            'solution': 'Curated creator platform scene',
+            'how_it_works': 'Creator workflow scene',
+            'impact': 'Momentum and adoption scene',
+            'proof': 'Traction proof scene',
+            'generic': 'Topic-faithful gaming scene',
+        },
+        'housing': {
+            'hook': 'Student housing discovery scene',
+            'problem': 'Apartment search friction scene',
+            'solution': 'Trusted listings product scene',
+            'how_it_works': 'Rental workflow scene',
+            'impact': 'Move-in outcome scene',
+            'proof': 'Marketplace traction scene',
+            'generic': 'Topic-faithful housing scene',
+        },
+        'software': {
+            'hook': 'Product mission scene',
+            'problem': 'Workflow bottleneck scene',
+            'solution': 'Automation platform scene',
+            'how_it_works': 'Connected workflow scene',
+            'impact': 'Product value scene',
+            'proof': 'Adoption proof scene',
+            'generic': 'Topic-faithful software scene',
+        },
+        'restaurant': {
+            'hook': 'Operations control scene',
+            'problem': 'Inventory friction scene',
+            'solution': 'Kitchen intelligence scene',
+            'how_it_works': 'Service workflow scene',
+            'generic': 'Topic-faithful restaurant scene',
+        },
+        'health': {
+            'hook': 'Care mission scene',
+            'problem': 'Signal fragmentation scene',
+            'solution': 'Clinical decision scene',
+            'generic': 'Topic-faithful health scene',
+        },
+        'finance': {
+            'hook': 'Fintech mission scene',
+            'problem': 'Payment friction scene',
+            'solution': 'Transaction flow scene',
+            'generic': 'Topic-faithful fintech scene',
+        },
+        'logistics': {
+            'hook': 'Routing mission scene',
+            'problem': 'Supply friction scene',
+            'solution': 'Control tower scene',
+            'generic': 'Topic-faithful logistics scene',
+        },
+        'education': {
+            'hook': 'Learning mission scene',
+            'problem': 'Guidance gap scene',
+            'solution': 'Learning platform scene',
+            'generic': 'Topic-faithful education scene',
+        },
+        'sports': {
+            'hook': 'Performance mission scene',
+            'problem': 'Decision friction scene',
+            'solution': 'Strategy intelligence scene',
+            'generic': 'Topic-faithful sports scene',
+        },
+        'generic': {
+            'hook': 'Mission-led hero scene',
+            'problem': 'Core friction scene',
+            'stakes': 'Market opportunity scene',
+            'solution': 'Product answer scene',
+            'how_it_works': 'Connected workflow scene',
+            'impact': 'Outcome-led scene',
+            'proof': 'Proof and traction scene',
+            'business_model': 'Commercial system scene',
+            'vision': 'Future-state scene',
+            'call_to_action': 'Closing brand scene',
+            'generic': 'Topic-faithful premium scene',
+        },
+    }
+    topic_summaries = summaries.get(topic) or summaries['generic']
+    return topic_summaries.get(slide_type) or topic_summaries.get('generic') or summaries['generic']['generic']
+
+
 def _fallback_style_prompt(style_key):
     prompts = {
-        'deck-illustration': 'premium editorial digital painting, polished concept art, cinematic lighting, richly detailed, textured, atmospheric, not flat vector art',
-        'animated-scene': 'animated feature-film still, premium stylized environment art, polished cinematic illustration, richly lit and detailed',
-        'cartoon': 'premium stylized cartoon illustration, clean shapes, rich lighting, modern animation poster quality, polished and detailed',
-        'abstract': 'atmospheric abstract scenic artwork, premium composition, elegant gradients, dramatic depth, high-end art direction',
+        'deck-illustration': 'premium scene illustration, cinematic environment art, polished keynote realism, topic-faithful composition, clean atmospheric storytelling',
+        'animated-scene': 'premium stylized scene illustration, animated feature-film lighting, cinematic environment art, scene-first composition, richly lit and detailed',
+        'cartoon': 'premium stylized cartoon scene, cel-shaded environment art, clean shapes, rich lighting, polished and detailed',
+        'abstract': 'high-end neon editorial illustration, dark premium background, electric orange and cyan rim light, topic-faithful subject, poster-grade clarity, premium presentation artwork',
     }
     return prompts.get(style_key, prompts['deck-illustration'])
 
 
-def _fallback_slide_direction(slide_type):
+def _fallback_slide_direction(slide_type, style_key=None):
+    style_key = _fallback_clean_text(style_key).lower()
+    if style_key == 'abstract':
+        directions = {
+            'hook': 'hero poster with one unmistakable subject, strong negative space, and premium neon drama',
+            'problem': 'express friction through contrast, obstruction, broken flow, or mismatched elements in a cohesive scene',
+            'stakes': 'show urgency with layered depth, signal intensity, and visible consequence',
+            'solution': 'resolve into a cleaner product-world scene with calmer geometry and confident luminous structure',
+            'how_it_works': 'show a connected step-by-step system using cards, nodes, routes, or staged objects',
+            'impact': 'express progress through upward energy, success-state symbols, and brighter outcome cues',
+            'proof': 'credible proof scene with refined data cues, anchored signals, and grounded editorial trust',
+            'business_model': 'commercial energy through pricing layers, exchange cues, and premium modular structure',
+            'vision': 'aspirational future-state poster with scale, atmosphere, and elegant premium ambition',
+            'call_to_action': 'decisive closing poster with a focused emblem, radiant center, and memorable finish',
+        }
+        return directions.get(slide_type, 'premium abstract composition with strong hierarchy, dramatic depth, and elegant restraint')
     directions = {
         'hook': 'one dominant hero subject, strong negative space, memorable cover composition',
         'problem': 'show friction and tension through environment and objects, not infographic shapes',
@@ -231,19 +903,89 @@ def _fallback_slide_direction(slide_type):
     return directions.get(slide_type, 'premium editorial composition, strong focal hierarchy, visually rich but clean')
 
 
-def _fallback_hosted_image_prompt(idea, slide, style_key):
+def _fallback_prompt_composition(index, slide_type, style_key=None):
+    slide_type = _fallback_clean_text(slide_type, 'story').lower()
+    style_key = _fallback_clean_text(style_key).lower()
+    if style_key == 'abstract':
+        type_cues = {
+            'hook': 'dominant hero subject, subtle interface cues, luxury poster balance, and clear storytelling focus',
+            'problem': 'tension-filled composition, asymmetrical balance, broken flow, and premium moody atmosphere',
+            'stakes': 'layered depth, expanding scale cues, dramatic signal intensity, and poster-grade focus',
+            'solution': 'ordered product-world scene, clean central structure, optimistic orange and cyan glow',
+            'how_it_works': 'connected cards, nodes, route lines, or staged objects with clear flow',
+            'impact': 'ascending energy, pulse rings, brighter outcome cues, and a strong focal symbol',
+            'proof': 'evidence-driven composition, trust cues, refined panels, and anchored momentum',
+            'business_model': 'exchange cards, pricing cues, routing connectors, and premium modular order',
+            'vision': 'wide future-state poster with layered horizon glow and elegant ambition',
+            'call_to_action': 'focused closing emblem, radiant center, and premium final cadence',
+        }
+        rotation_cues = [
+            'editorial poster balance with one dominant luminous anchor',
+            'slightly elevated composition with layered circuit planes',
+            'cinematic side glow with floating interface elements',
+            'gallery-like composition with strong negative space and spark details',
+            'quiet premium composition with restrained signal trails and atmospheric depth',
+        ]
+        base = type_cues.get(slide_type, 'premium abstract composition with clean hierarchy and atmospheric depth')
+        return f'{base}, {rotation_cues[index % len(rotation_cues)]}'
+    type_cues = {
+        'hook': 'wide establishing shot, strong silhouette subject, architectural depth, luxury editorial mood',
+        'problem': 'off-axis composition, tactile objects, narrative friction, cinematic tension',
+        'stakes': 'dramatic depth, layered environment storytelling, elevated scale cues',
+        'solution': 'organized hero composition, cleaner geometry, optimistic lighting, product-world clarity',
+        'how_it_works': 'multi-zone operational composition, process depth, clean pathways, premium systems feel',
+        'impact': 'success-state composition, premium environmental storytelling, confident lighting',
+        'proof': 'credible editorial still life, refined screens and objects, grounded realism without readable text',
+        'business_model': 'commercial still life composition, refined money-flow cues, premium materials',
+        'vision': 'future-facing composition, expansive horizon, aspirational architecture, elegant atmosphere',
+        'call_to_action': 'closing campaign image, decisive focal point, polished premium finish',
+    }
+    rotation_cues = [
+        'camera at eye level with soft depth of field',
+        'slightly elevated perspective with generous foreground shape language',
+        'cinematic side light and asymmetrical balance',
+        'gallery-like composition with premium restraint and strong negative space',
+        'editorial magazine composition with layered depth and subtle atmosphere',
+    ]
+    base = type_cues.get(slide_type, 'premium editorial composition with clean hierarchy and atmospheric depth')
+    return f'{base}, {rotation_cues[index % len(rotation_cues)]}'
+
+
+def _fallback_hosted_image_size(slide, index, image_options=None):
+    slide_type = _fallback_clean_text((slide or {}).get('type'), 'story').lower()
+    coverage = _fallback_clean_text((image_options or {}).get('coverage'), 'key-slides').lower()
+    if slide_type in {'hook', 'vision', 'call_to_action'}:
+        return 768
+    if coverage == 'all':
+        return 512
+    if slide_type in {'solution', 'how_it_works', 'impact', 'proof'}:
+        return 640
+    return 512
+
+
+def _fallback_hosted_image_prompt(idea, slide, style_key, index=0):
     slide = slide or {}
     topic = _fallback_topic_bucket(idea, slide)
     title = _fallback_clean_text(slide.get('title'))
     visual = _fallback_clean_text(slide.get('visual_suggestion'))
     subtitle = _fallback_clean_text(slide.get('subtitle'))
     slide_type = _fallback_clean_text(slide.get('type'), 'story').lower()
+    abstract_mode = style_key == 'abstract'
+    focus_terms = _fallback_extract_focus_terms(idea, slide, limit=5)
+    motifs = _fallback_topic_motifs(topic, index=index, limit=3)
+    subject_brief = _fallback_slide_subject_brief(topic, slide_type, index=index)
 
     prompt_parts = [
-        _fallback_topic_subject(topic),
+        f'topic-faithful premium editorial illustration of {subject_brief}',
+        _fallback_topic_abstract_subject(topic) if abstract_mode else _fallback_topic_subject(topic),
         _fallback_style_prompt(style_key),
-        _fallback_slide_direction(slide_type),
+        _fallback_slide_direction(slide_type, style_key),
+        _fallback_prompt_composition(index, slide_type, style_key),
     ]
+    if motifs:
+        prompt_parts.append(f'include motifs such as {", ".join(motifs)}')
+    if focus_terms:
+        prompt_parts.append(f'topic cues: {", ".join(focus_terms)}')
     if title:
         prompt_parts.append(f'theme inspired by "{title}"')
     if visual:
@@ -256,9 +998,18 @@ def _fallback_hosted_image_prompt(idea, slide, style_key):
     prompt_parts.extend([
         'square composition for a premium presentation image panel',
         'no text, no letters, no words, no watermark, no logo, no captions, no readable UI text',
-        'screens and packaging should show only abstract light or graphic shapes',
-        'not an infographic, not a chart, not a dashboard screenshot',
+        'no signature, no footer text, no bottom strip, no edge labels, no stray glyphs, no tiny text artifacts',
+        'no signs, no posters, no billboards, no labels, no typographic panels',
+        'if interface elements appear, keep them icon-only and textless with clean graphic blocks',
+        'not a generic infographic, not a plain chart, not a literal dashboard screenshot',
+        'prefer one cohesive scene instead of a collage of unrelated panels',
+        'make the startup topic immediately obvious and avoid random unrelated symbols',
     ])
+    if abstract_mode:
+        prompt_parts.extend([
+            'allow symbolic topic objects, dashboards, gears, icons, city forms, and industry motifs when relevant',
+            'keep it stylistic and poster-like, but still grounded in the actual topic and startup domain',
+        ])
     return ', '.join(part for part in prompt_parts if part)
 
 
@@ -268,9 +1019,12 @@ def _fallback_fetch_hosted_image_meta(idea, slide, index, image_options=None):
 
     slide = slide or {}
     style_key = _fallback_clean_text((image_options or {}).get('style'), 'deck-illustration').lower()
+    model_key = _fallback_clean_text((image_options or {}).get('model_key') or (image_options or {}).get('model'), FALLBACK_IMAGE_MODEL_KEY)
+    provider_model = _fallback_provider_candidates(model_key, slide.get('type'), index)[0]
+    image_size = _fallback_hosted_image_size(slide, index, image_options=image_options)
     seed = _fallback_hash_seed(idea, slide.get('title'), slide.get('subtitle'), slide.get('type'), style_key, index)
-    prompt = _fallback_hosted_image_prompt(idea, slide, style_key)
-    cache_key = f"{seed}|{prompt}"
+    prompt = _fallback_hosted_image_prompt(idea, slide, style_key, index=index)
+    cache_key = f"{provider_model}|{image_size}|{seed}|{prompt}"
 
     with _HOSTED_IMAGE_CACHE_LOCK:
         cached = _HOSTED_IMAGE_CACHE.get(cache_key)
@@ -278,14 +1032,92 @@ def _fallback_fetch_hosted_image_meta(idea, slide, index, image_options=None):
         return {
             'image_url': cached,
             'image_prompt': prompt,
-            'image_model': FALLBACK_IMAGE_MODEL_LABEL,
-            'image_repo_id': 'pollinations/flux',
+            'image_model': _fallback_provider_label(provider_model),
+            'image_repo_id': _fallback_provider_repo(provider_model),
             'image_status': 'cached',
         }
 
+    data_url = _fallback_fetch_provider_image_data_url(
+        prompt=prompt,
+        provider_model=provider_model,
+        seed=seed,
+        image_size=image_size,
+        cache_key=cache_key,
+    )
+
+    return {
+        'image_url': data_url,
+        'image_prompt': prompt,
+        'image_model': _fallback_provider_label(provider_model),
+        'image_repo_id': _fallback_provider_repo(provider_model),
+        'image_status': 'generated',
+    }
+
+
+def _fallback_fetch_google_image_data_url(prompt, provider_model, seed, image_size, cache_key=None):
+    if not GOOGLE_IMAGE_ENABLED:
+        raise RuntimeError('Google image generation is unavailable')
+    prompt = _fallback_clean_text(prompt)
+    provider_model = _fallback_clean_text(provider_model, 'google-imagen')
+    cache_key = cache_key or f"{provider_model}|{image_size}|{seed}|{prompt}"
+
+    with _HOSTED_IMAGE_CACHE_LOCK:
+        cached = _HOSTED_IMAGE_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    client = _get_google_image_client()
+    model_name = _google_image_model_name(provider_model)
+    config = google_genai_types.GenerateImagesConfig(
+        number_of_images=1,
+        aspect_ratio='1:1',
+        person_generation='allow_adult',
+    )
+    response = client.models.generate_images(
+        model=model_name,
+        prompt=prompt,
+        config=config,
+    )
+    generated_images = getattr(response, 'generated_images', None) or []
+    if not generated_images:
+        raise RuntimeError('Google image response returned no images')
+
+    image_obj = getattr(generated_images[0], 'image', None)
+    if image_obj is None:
+        raise RuntimeError('Google image response was missing image payload')
+
+    image_bytes = getattr(image_obj, 'image_bytes', None)
+    if image_bytes is None:
+        raise RuntimeError('Google image payload was empty')
+    if isinstance(image_bytes, str):
+        binary_data = base64.b64decode(image_bytes)
+    else:
+        binary_data = bytes(image_bytes)
+    mime_type = getattr(image_obj, 'mime_type', None) or 'image/png'
+    data_url = _fallback_binary_data_url(binary_data, mime_type)
+
+    with _HOSTED_IMAGE_CACHE_LOCK:
+        _HOSTED_IMAGE_CACHE[cache_key] = data_url
+    return data_url
+
+
+def _fallback_fetch_hosted_image_data_url(prompt, provider_model, seed, image_size, cache_key=None):
+    if not HOSTED_FALLBACK_ENABLED:
+        raise RuntimeError('Hosted fallback image generation is disabled')
+    prompt = _fallback_clean_text(prompt)
+    provider_model = _fallback_clean_text(provider_model, 'flux')
+    seed = int(seed or 1)
+    image_size = max(384, int(image_size or 512))
+    cache_key = cache_key or f"{provider_model}|{image_size}|{seed}|{prompt}"
+
+    with _HOSTED_IMAGE_CACHE_LOCK:
+        cached = _HOSTED_IMAGE_CACHE.get(cache_key)
+    if cached:
+        return cached
+
     request_url = (
         'https://image.pollinations.ai/prompt/'
-        f'{quote(prompt)}?width=1024&height=1024&seed={seed}&model=flux&nologo=true&safe=true'
+        f'{quote(prompt)}?width={image_size}&height={image_size}&seed={seed}&model={provider_model}&nologo=true&safe=true'
     )
     request = Request(
         request_url,
@@ -306,13 +1138,28 @@ def _fallback_fetch_hosted_image_meta(idea, slide, index, image_options=None):
     with _HOSTED_IMAGE_CACHE_LOCK:
         _HOSTED_IMAGE_CACHE[cache_key] = data_url
 
-    return {
-        'image_url': data_url,
-        'image_prompt': prompt,
-        'image_model': FALLBACK_IMAGE_MODEL_LABEL,
-        'image_repo_id': 'pollinations/flux',
-        'image_status': 'generated',
-    }
+    return data_url
+
+
+def _fallback_fetch_provider_image_data_url(prompt, provider_model, seed, image_size, cache_key=None):
+    provider_model = _fallback_clean_text(provider_model, 'flux')
+    if provider_model.startswith('google-imagen') and GOOGLE_IMAGE_ENABLED:
+        return _fallback_fetch_google_image_data_url(
+            prompt=prompt,
+            provider_model=provider_model,
+            seed=seed,
+            image_size=image_size,
+            cache_key=cache_key,
+        )
+    if provider_model.startswith('google-imagen'):
+        provider_model = 'flux'
+    return _fallback_fetch_hosted_image_data_url(
+        prompt=prompt,
+        provider_model=provider_model,
+        seed=seed,
+        image_size=image_size,
+        cache_key=cache_key,
+    )
 
 
 def _fallback_image_from_data_url(data_url):
@@ -1247,6 +2094,452 @@ def _fallback_generate_scene_image(topic, slide_type, palette, size, seed):
     return _fallback_add_scene_finish(scene, palette)
 
 
+def _fallback_build_abstract_illustration(topic, slide_type, palette, seed):
+    topic = _fallback_clean_text(topic, 'generic').lower()
+    slide_type = _fallback_clean_text(slide_type, 'story').lower()
+    rnd = random.Random(seed)
+    canvas = _fallback_gradient_canvas((1024, 1024), palette['bg1'], palette['bg0'], palette['bg2']).convert('RGBA')
+    draw = ImageDraw.Draw(canvas)
+    border_color = _fallback_hex_to_rgba(palette['line'], 54)
+    line_color = _fallback_hex_to_rgba(palette['line'], 94)
+    line_soft = _fallback_hex_to_rgba(palette['line'], 40)
+    accent = _fallback_hex_to_rgba(palette['accent'], 214)
+    accent2 = _fallback_hex_to_rgba(palette['accent2'], 196)
+    panel_fill = _fallback_hex_to_rgba(palette['panel'], 214)
+    panel_soft = _fallback_hex_to_rgba(palette['panel2'], 186)
+
+    draw.rounded_rectangle((28, 28, 996, 996), radius=60, outline=border_color, width=2)
+    draw.line((122, 108, 760, 108), fill=line_color, width=3)
+    for x, fill in [(80, accent), (104, accent2), (124, _fallback_hex_to_rgba(palette['line'], 84))]:
+        draw.ellipse((x, 92, x + 14, 106), fill=fill)
+
+    for _ in range(44):
+        x = rnd.randint(86, 936)
+        y = rnd.randint(74, 940)
+        r = rnd.randint(2, 5)
+        fill = accent if rnd.random() > 0.5 else accent2
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=_fallback_hex_to_rgba('#FFFFFF', 96 if fill == accent2 else 72))
+
+    def pill(box, fill, outline=None, width=0, radius=20):
+        draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
+
+    def neon_line(points, fill, width=12, glow=64):
+        glow_layer = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow_layer)
+        glow_draw.line(points, fill=_fallback_hex_to_rgba('#FFFFFF', glow), width=width + 10, joint='curve')
+        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=18))
+        canvas.alpha_composite(glow_layer)
+        draw.line(points, fill=fill, width=width, joint='curve')
+        draw.line(points, fill=_fallback_hex_to_rgba(palette['line'], 108), width=max(2, width // 4), joint='curve')
+
+    def circuit_grid():
+        for _ in range(16):
+            x = rnd.randint(88, 936)
+            y0 = rnd.randint(120, 280)
+            y1 = rnd.randint(620, 930)
+            color = accent if rnd.random() > 0.45 else accent2
+            draw.line((x, y0, x, y1), fill=_fallback_hex_to_rgba('#FFFFFF', 28), width=rnd.randint(1, 3))
+            step_y = rnd.randint(y0 + 60, y1 - 60)
+            branch = rnd.randint(-140, 160)
+            draw.line((x, step_y, x + branch, step_y), fill=_fallback_hex_to_rgba(palette['line'], 18), width=2)
+            for ny in (y0 + 24, step_y, y1 - 24):
+                rr = rnd.randint(4, 8)
+                node_fill = accent if rnd.random() > 0.5 else accent2
+                draw.ellipse((x - rr, ny - rr, x + rr, ny + rr), fill=node_fill)
+
+    def floating_card(x, y, w, h, border_fill, inner_fill=None, with_chart=False):
+        pill((x, y, x + w, y + h), border_fill, outline=_fallback_hex_to_rgba(palette['line'], 44), width=2, radius=28)
+        if inner_fill:
+            pill((x + 18, y + 18, x + w - 18, y + h - 18), inner_fill, radius=22)
+        if with_chart:
+            neon_line(
+                [
+                    (x + 52, y + h - 88),
+                    (x + 116, y + h - 126),
+                    (x + 188, y + h - 92),
+                    (x + 262, y + h - 152),
+                    (x + w - 46, y + h - 114),
+                ],
+                accent,
+                width=9,
+                glow=72,
+            )
+
+    def draw_dashboard_shell(box, highlight=None, accent_fill=None):
+        x1, y1, x2, y2 = box
+        highlight = highlight or accent
+        accent_fill = accent_fill or accent2
+        pill((x1, y1, x2, y2), panel_soft, outline=_fallback_hex_to_rgba(palette['line'], 52), width=2, radius=32)
+        pill((x1 + 20, y1 + 20, x2 - 20, y2 - 20), _fallback_hex_to_rgba('#0E1331', 220), radius=24)
+        for idx, width_ratio in enumerate((0.28, 0.22, 0.16)):
+            bar_w = int((x2 - x1) * width_ratio)
+            bar_x2 = x1 + 64 + bar_w
+            pill((x1 + 48, y1 + 42 + idx * 38, bar_x2, y1 + 56 + idx * 38), line_soft, radius=8)
+        neon_line(
+            [
+                (x1 + 64, y2 - 120),
+                (x1 + 156, y2 - 178),
+                (x1 + 252, y2 - 132),
+                (x1 + 346, y2 - 204),
+                (x2 - 54, y2 - 152),
+            ],
+            highlight,
+            width=10,
+            glow=74,
+        )
+        draw.ellipse((x2 - 170, y1 + 54, x2 - 64, y1 + 160), fill=_fallback_hex_to_rgba(palette['accent2'], 64))
+        draw.ellipse((x2 - 132, y1 + 82, x2 - 88, y1 + 126), fill=accent_fill)
+
+    def draw_controller(box):
+        x1, y1, x2, y2 = box
+        cx = (x1 + x2) / 2
+        cy = y1 + (y2 - y1) * 0.74
+        body_w = (x2 - x1) * 0.42
+        grip_w = (x2 - x1) * 0.22
+        grip_h = (y2 - y1) * 0.18
+        pill((cx - body_w / 2, cy - grip_h / 2, cx + body_w / 2, cy + grip_h / 2), _fallback_hex_to_rgba(palette['panel'], 206), radius=28)
+        draw.ellipse((cx - body_w / 2 - grip_w * 0.78, cy - grip_h * 0.84, cx - body_w / 2 + grip_w * 0.28, cy + grip_h * 0.84), fill=_fallback_hex_to_rgba(palette['panel2'], 218), outline=_fallback_hex_to_rgba(palette['line'], 82), width=2)
+        draw.ellipse((cx + body_w / 2 - grip_w * 0.28, cy - grip_h * 0.84, cx + body_w / 2 + grip_w * 0.78, cy + grip_h * 0.84), fill=_fallback_hex_to_rgba(palette['panel2'], 218), outline=_fallback_hex_to_rgba(palette['line'], 82), width=2)
+        draw.ellipse((cx - 74, cy - 20, cx - 34, cy + 20), fill=accent2)
+        draw.ellipse((cx + 34, cy - 20, cx + 74, cy + 20), fill=accent)
+        draw.ellipse((cx + 82, cy - 36, cx + 100, cy - 18), fill=accent2)
+        draw.ellipse((cx + 106, cy - 12, cx + 124, cy + 6), fill=accent2)
+        draw.ellipse((cx + 82, cy + 12, cx + 100, cy + 30), fill=accent2)
+
+    def draw_building_cluster(box):
+        x1, y1, x2, y2 = box
+        base_y = y2 - 42
+        specs = [
+            (x1 + 58, y1 + 110, 118, base_y),
+            (x1 + 212, y1 + 74, 146, base_y),
+            (x1 + 392, y1 + 136, 104, base_y),
+        ]
+        for idx, (left, top, width_px, bottom) in enumerate(specs):
+            pill((left, top, left + width_px, bottom), _fallback_hex_to_rgba(palette['panel'], 214 if idx == 1 else 196), outline=_fallback_hex_to_rgba(palette['line'], 62), width=2, radius=26)
+            for row in range(4):
+                for col in range(2 if idx != 1 else 3):
+                    wx = left + 24 + col * 36
+                    wy = top + 30 + row * 56
+                    pill((wx, wy, wx + 16, wy + 22), _fallback_hex_to_rgba(palette['line'], 26), radius=6)
+        pin_x = x1 + (x2 - x1) * 0.74
+        pin_y = y1 + 74
+        draw.ellipse((pin_x - 46, pin_y - 46, pin_x + 46, pin_y + 46), fill=_fallback_hex_to_rgba(palette['accent'], 90))
+        draw.ellipse((pin_x - 20, pin_y - 20, pin_x + 20, pin_y + 20), fill=_fallback_hex_to_rgba(palette['panel'], 214))
+        draw.polygon([(pin_x, pin_y + 64), (pin_x - 22, pin_y + 20), (pin_x + 22, pin_y + 20)], fill=_fallback_hex_to_rgba(palette['accent'], 158))
+        neon_line([(x1 + 88, y2 - 84), (x1 + 220, y2 - 144), (x1 + 360, y2 - 122), (pin_x, y2 - 192)], accent2, width=8, glow=66)
+
+    def draw_health_signal(box):
+        x1, y1, x2, y2 = box
+        draw_dashboard_shell((x1, y1 + 34, x2 - 120, y2 - 30), highlight=accent2, accent_fill=accent)
+        heart_box = (x2 - 250, y1 + 86, x2 - 88, y1 + 248)
+        pill(heart_box, _fallback_hex_to_rgba(palette['panel'], 210), outline=_fallback_hex_to_rgba(palette['line'], 54), width=2, radius=30)
+        hx = (heart_box[0] + heart_box[2]) / 2
+        hy = (heart_box[1] + heart_box[3]) / 2 + 10
+        draw.ellipse((hx - 48, hy - 84, hx - 4, hy - 40), fill=_fallback_hex_to_rgba(palette['accent'], 170))
+        draw.ellipse((hx + 4, hy - 84, hx + 48, hy - 40), fill=_fallback_hex_to_rgba(palette['accent'], 170))
+        draw.polygon([(hx - 62, hy - 56), (hx + 62, hy - 56), (hx, hy + 56)], fill=_fallback_hex_to_rgba(palette['accent2'], 176))
+        neon_line([(x1 + 86, y2 - 152), (x1 + 182, y2 - 152), (x1 + 230, y2 - 192), (x1 + 272, y2 - 110), (x1 + 348, y2 - 110), (x1 + 412, y2 - 164), (x2 - 146, y2 - 164)], accent, width=8, glow=64)
+
+    def draw_finance_signal(box):
+        x1, y1, x2, y2 = box
+        draw_dashboard_shell((x1, y1, x2, y2), highlight=accent, accent_fill=accent2)
+        ring_cx = x2 - 136
+        ring_cy = y1 + 138
+        draw.ellipse((ring_cx - 62, ring_cy - 62, ring_cx + 62, ring_cy + 62), outline=_fallback_hex_to_rgba(palette['accent2'], 180), width=12)
+        draw.ellipse((ring_cx - 34, ring_cy - 34, ring_cx + 34, ring_cy + 34), outline=_fallback_hex_to_rgba(palette['line'], 148), width=8)
+        draw.line((ring_cx, ring_cy - 24, ring_cx, ring_cy + 24), fill=_fallback_hex_to_rgba(palette['line'], 188), width=8)
+        draw.arc((ring_cx - 28, ring_cy - 54, ring_cx + 28, ring_cy), start=200, end=28, fill=_fallback_hex_to_rgba(palette['line'], 188), width=8)
+        draw.arc((ring_cx - 28, ring_cy, ring_cx + 28, ring_cy + 54), start=200, end=28, fill=_fallback_hex_to_rgba(palette['line'], 188), width=8)
+
+    def draw_education_signal(box):
+        x1, y1, x2, y2 = box
+        bulb_cx = x1 + 208
+        bulb_cy = y1 + 232
+        draw.ellipse((bulb_cx - 116, bulb_cy - 116, bulb_cx + 116, bulb_cy + 116), fill=_fallback_hex_to_rgba(palette['panel'], 198), outline=_fallback_hex_to_rgba(palette['line'], 76), width=3)
+        draw.ellipse((bulb_cx - 68, bulb_cy - 68, bulb_cx + 68, bulb_cy + 68), fill=_fallback_hex_to_rgba(palette['accent'], 120))
+        pill((bulb_cx - 42, bulb_cy + 88, bulb_cx + 42, bulb_cy + 138), _fallback_hex_to_rgba(palette['panel2'], 214), radius=16)
+        draw.line((bulb_cx, bulb_cy + 18, bulb_cx, bulb_cy + 86), fill=_fallback_hex_to_rgba(palette['line'], 188), width=8)
+        for angle in range(0, 360, 45):
+            theta = math.radians(angle)
+            x0 = bulb_cx + math.cos(theta) * 134
+            y0 = bulb_cy + math.sin(theta) * 134
+            x1_line = bulb_cx + math.cos(theta) * 170
+            y1_line = bulb_cy + math.sin(theta) * 170
+            draw.line((x0, y0, x1_line, y1_line), fill=_fallback_hex_to_rgba(palette['line'], 98), width=5)
+        pill((x1 + 420, y1 + 142, x2 - 88, y2 - 120), _fallback_hex_to_rgba(palette['panel2'], 198), outline=_fallback_hex_to_rgba(palette['line'], 52), width=2, radius=30)
+        neon_line([(x1 + 470, y2 - 210), (x1 + 566, y2 - 246), (x1 + 658, y2 - 176), (x2 - 128, y2 - 228)], accent2, width=8, glow=62)
+
+    def draw_logistics_signal(box):
+        x1, y1, x2, y2 = box
+        for idx, (bx, by, bw, bh) in enumerate(((x1 + 84, y1 + 142, 126, 110), (x1 + 260, y1 + 214, 154, 126), (x1 + 470, y1 + 154, 124, 110))):
+            pill((bx, by, bx + bw, by + bh), _fallback_hex_to_rgba(palette['panel'], 204 if idx != 1 else 226), outline=_fallback_hex_to_rgba(palette['line'], 58), width=2, radius=24)
+            draw.line((bx + 20, by + 36, bx + bw - 20, by + 36), fill=_fallback_hex_to_rgba(palette['line'], 92), width=4)
+            draw.line((bx + 20, by + 64, bx + bw - 42, by + 64), fill=_fallback_hex_to_rgba(palette['accent'], 122), width=5)
+        neon_line([(x1 + 136, y2 - 190), (x1 + 324, y2 - 138), (x1 + 496, y2 - 216), (x2 - 116, y2 - 152)], accent, width=10, glow=74)
+        for cx, cy in ((x1 + 136, y2 - 190), (x1 + 324, y2 - 138), (x1 + 496, y2 - 216), (x2 - 116, y2 - 152)):
+            draw.ellipse((cx - 16, cy - 16, cx + 16, cy + 16), fill=accent2)
+
+    def draw_stadium_signal(box):
+        x1, y1, x2, y2 = box
+        pill((x1 + 78, y1 + 116, x2 - 78, y2 - 90), _fallback_hex_to_rgba(palette['panel'], 202), outline=_fallback_hex_to_rgba(palette['line'], 56), width=2, radius=42)
+        pill((x1 + 132, y1 + 166, x2 - 132, y2 - 140), _fallback_hex_to_rgba(palette['panel2'], 212), outline=_fallback_hex_to_rgba(palette['line'], 42), width=2, radius=34)
+        draw.line((x1 + 132, (y1 + y2) / 2, x2 - 132, (y1 + y2) / 2), fill=_fallback_hex_to_rgba(palette['line'], 76), width=4)
+        draw.ellipse((((x1 + x2) / 2) - 72, ((y1 + y2) / 2) - 72, ((x1 + x2) / 2) + 72, ((y1 + y2) / 2) + 72), outline=_fallback_hex_to_rgba(palette['line'], 70), width=4)
+        neon_line([(x1 + 206, y2 - 162), (x1 + 326, y2 - 214), (x1 + 468, y2 - 196), (x2 - 192, y1 + 212)], accent2, width=10, glow=68)
+        draw.ellipse((x2 - 242, y1 + 152, x2 - 146, y1 + 248), fill=_fallback_hex_to_rgba(palette['accent'], 120))
+
+    def draw_topic_focus(box):
+        if topic == 'gaming':
+            draw_dashboard_shell(box, highlight=accent, accent_fill=accent2)
+            draw_controller(box)
+        elif topic == 'software':
+            draw_dashboard_shell(box, highlight=accent2, accent_fill=accent)
+            pill((box[0] + 66, box[1] + 82, box[0] + 178, box[1] + 308), _fallback_hex_to_rgba(palette['panel'], 198), outline=_fallback_hex_to_rgba(palette['line'], 64), width=2, radius=26)
+            draw.ellipse((box[0] + 86, box[1] + 108, box[0] + 126, box[1] + 148), fill=accent2)
+        elif topic == 'housing':
+            draw_building_cluster(box)
+        elif topic == 'health':
+            draw_health_signal(box)
+        elif topic == 'finance':
+            draw_finance_signal(box)
+        elif topic == 'education':
+            draw_education_signal(box)
+        elif topic == 'logistics':
+            draw_logistics_signal(box)
+        elif topic == 'sports':
+            draw_stadium_signal(box)
+        elif topic == 'restaurant':
+            draw_dashboard_shell(box, highlight=accent2, accent_fill=accent)
+            for idx in range(4):
+                left = box[0] + 64 + idx * 104
+                pill((left, box[1] + 84, left + 72, box[1] + 200), _fallback_hex_to_rgba(palette['panel'], 188 if idx % 2 else 214), radius=18)
+            draw.ellipse((box[2] - 246, box[1] + 188, box[2] - 126, box[1] + 308), fill=_fallback_hex_to_rgba(palette['accent'], 74))
+            draw.ellipse((box[2] - 214, box[1] + 220, box[2] - 158, box[1] + 276), outline=_fallback_hex_to_rgba(palette['line'], 176), width=6)
+            neon_line([(box[0] + 78, box[3] - 108), (box[0] + 220, box[3] - 166), (box[0] + 380, box[3] - 136), (box[2] - 114, box[3] - 194)], accent, width=8, glow=60)
+        else:
+            draw_dashboard_shell(box, highlight=accent, accent_fill=accent2)
+
+    circuit_grid()
+    _fallback_add_glow(canvas, (786, 210), 234, palette['accent'], alpha=108, blur=92)
+    _fallback_add_glow(canvas, (238, 804), 218, palette['accent2'], alpha=84, blur=92)
+    _fallback_add_glow(canvas, (510, 510), 174, palette['accent'], alpha=44, blur=120)
+
+    if slide_type in {'hook', 'solution', 'business_model'}:
+        floating_card(178, 240, 660, 454, panel_fill, inner_fill=_fallback_hex_to_rgba('#0E1331', 228), with_chart=True)
+        floating_card(90, 414, 144, 248, panel_soft, inner_fill=_fallback_hex_to_rgba('#0E1331', 204))
+        floating_card(724, 268, 168, 300, panel_soft, inner_fill=_fallback_hex_to_rgba('#10173A', 212))
+        for y in (320, 366, 412):
+            pill((272, y, 432, y + 14), line_soft, radius=7)
+        for x, y, rr, fill in [(778, 344, 60, accent2), (814, 338, 18, accent), (784, 452, 14, accent)]:
+            draw.ellipse((x - rr, y - rr, x + rr, y + rr), fill=fill)
+        neon_line([(248, 728), (394, 650), (542, 674), (734, 586), (900, 612)], accent, width=14, glow=84)
+        draw_topic_focus((224, 280, 768, 650))
+    elif slide_type in {'problem', 'stakes'}:
+        neon_line([(120, 850), (302, 734), (442, 748), (618, 606), (810, 518), (928, 408)], accent, width=18, glow=92)
+        neon_line([(154, 768), (286, 706), (444, 644), (624, 578), (786, 432)], accent2, width=10, glow=68)
+        for cx, cy, rr, fill in [(190, 738, 74, accent), (760, 334, 86, accent), (562, 560, 38, accent2)]:
+            draw.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), fill=_fallback_hex_to_rgba(palette['panel2'], 44))
+            draw.ellipse((cx - rr // 2, cy - rr // 2, cx + rr // 2, cy + rr // 2), fill=fill)
+        for box in [(126, 206, 402, 430), (586, 188, 876, 448)]:
+            pill(box, panel_soft, outline=_fallback_hex_to_rgba(palette['line'], 52), width=2, radius=34)
+        draw_topic_focus((152, 224, 376, 412))
+        draw_topic_focus((612, 206, 850, 430))
+    elif slide_type == 'how_it_works':
+        centers = [(252, 534), (512, 370), (778, 534)]
+        for idx, (cx, cy) in enumerate(centers):
+            outer = 104 if idx == 1 else 88
+            inner = outer - 26
+            fill = accent if idx != 1 else accent2
+            draw.ellipse((cx - outer, cy - outer, cx + outer, cy + outer), outline=fill, width=18)
+            draw.ellipse((cx - inner, cy - inner, cx + inner, cy + inner), outline=_fallback_hex_to_rgba(palette['line'], 92), width=8)
+            draw.ellipse((cx - 22, cy - 22, cx + 22, cy + 22), fill=fill)
+            for spoke in range(0, 360, 45):
+                angle = math.radians(spoke)
+                x0 = cx + math.cos(angle) * (outer - 8)
+                y0 = cy + math.sin(angle) * (outer - 8)
+                x1 = cx + math.cos(angle) * (outer + 34)
+                y1 = cy + math.sin(angle) * (outer + 34)
+                draw.line((x0, y0, x1, y1), fill=_fallback_hex_to_rgba(palette['line'], 86), width=4)
+        neon_line([(338, 504), (430, 432), (512, 370), (612, 438), (704, 504)], accent2, width=10, glow=72)
+        for idx, box in enumerate(((138, 424, 366, 662), (398, 256, 626, 494), (664, 424, 892, 662))):
+            draw_topic_focus(box)
+            badge_cx = box[0] + 38
+            badge_cy = box[1] + 38
+            draw.ellipse((badge_cx - 18, badge_cy - 18, badge_cx + 18, badge_cy + 18), fill=_fallback_hex_to_rgba(palette['panel'], 216), outline=_fallback_hex_to_rgba(palette['line'], 104), width=2)
+            draw.ellipse((badge_cx - 8, badge_cy - 8, badge_cx + 8, badge_cy + 8), fill=accent if idx != 1 else accent2)
+    elif slide_type in {'impact', 'proof'}:
+        pill((246, 212, 776, 730), panel_fill, outline=_fallback_hex_to_rgba(palette['line'], 48), width=2, radius=38)
+        for idx, (x, h, fill) in enumerate([(330, 168, accent), (456, 272, accent2), (584, 368, accent), (710, 446, accent2)]):
+            pill((x, 678 - h, x + 74, 678), fill, radius=18)
+        neon_line([(292, 518), (394, 472), (500, 504), (618, 390), (748, 310)], accent, width=10, glow=82)
+        for cx, cy, fill in [(292, 518, accent2), (500, 504, accent), (748, 310, accent2)]:
+            draw.ellipse((cx - 14, cy - 14, cx + 14, cy + 14), fill=fill)
+        draw_topic_focus((306, 246, 728, 486))
+    elif slide_type in {'vision', 'call_to_action'}:
+        neon_line([(86, 846), (230, 764), (380, 724), (582, 646), (748, 556), (934, 430)], accent, width=16, glow=92)
+        pill((186, 286, 842, 720), panel_fill, outline=_fallback_hex_to_rgba(palette['line'], 48), width=2, radius=42)
+        draw.ellipse((426, 344, 594, 512), fill=_fallback_hex_to_rgba(palette['accent'], 56))
+        draw.ellipse((454, 372, 566, 484), fill=_fallback_hex_to_rgba(palette['accent2'], 62))
+        draw.line((510, 392, 510, 464), fill=_fallback_hex_to_rgba(palette['line'], 180), width=12)
+        draw.line((474, 428, 546, 428), fill=_fallback_hex_to_rgba(palette['line'], 180), width=12)
+        draw_topic_focus((248, 332, 778, 674))
+    else:
+        pill((214, 240, 820, 706), panel_fill, outline=_fallback_hex_to_rgba(palette['line'], 46), width=2, radius=44)
+        floating_card(264, 304, 506, 288, panel_soft, inner_fill=_fallback_hex_to_rgba('#0D1330', 220), with_chart=True)
+        for box, fill in [((286, 644, 452, 744), accent), ((480, 644, 610, 744), accent2), ((638, 644, 760, 744), _fallback_hex_to_rgba(palette['line'], 110))]:
+            pill(box, fill, radius=24)
+        draw_topic_focus((280, 328, 748, 612))
+
+    return canvas.convert('RGB')
+
+
+def _fallback_apply_scene_treatment(scene_image, palette, variant):
+    scene = scene_image.convert('RGB')
+    variant = _fallback_clean_text(variant, 'presentation').lower()
+
+    if variant == 'presentation':
+        scene = ImageEnhance.Color(scene).enhance(1.10)
+        scene = ImageEnhance.Contrast(scene).enhance(1.12)
+        scene = ImageEnhance.Brightness(scene).enhance(1.32)
+        scene = ImageEnhance.Sharpness(scene).enhance(1.18)
+        rgba = scene.convert('RGBA')
+        wash = Image.new('RGBA', scene.size, _fallback_hex_to_rgba(palette['line'], 10))
+        tint = Image.new('RGBA', scene.size, _fallback_hex_to_rgba(palette['accent'], 10))
+        rgba = Image.alpha_composite(rgba, wash)
+        scene = Image.alpha_composite(rgba, tint).convert('RGB')
+        return scene
+
+    if variant == 'animated':
+        scene = ImageEnhance.Color(scene).enhance(1.34)
+        scene = ImageEnhance.Contrast(scene).enhance(1.14)
+        scene = ImageEnhance.Brightness(scene).enhance(1.24)
+        scene = ImageEnhance.Sharpness(scene).enhance(1.22)
+        tint = Image.new('RGBA', scene.size, _fallback_hex_to_rgba(palette['accent2'], 18))
+        scene = Image.alpha_composite(scene.convert('RGBA'), tint).convert('RGB')
+        return scene
+
+    if variant == 'cartoon':
+        scene = ImageEnhance.Color(scene).enhance(1.58)
+        scene = ImageEnhance.Contrast(scene).enhance(1.18)
+        scene = ImageOps.posterize(scene, 4)
+        scene = scene.quantize(colors=28, method=Image.MEDIANCUT).convert('RGB')
+        scene = scene.filter(ImageFilter.SMOOTH_MORE)
+        scene = ImageEnhance.Sharpness(scene).enhance(1.3)
+        tint = Image.new('RGBA', scene.size, _fallback_hex_to_rgba(palette['accent'], 16))
+        scene = Image.alpha_composite(scene.convert('RGBA'), tint).convert('RGB')
+        return scene
+
+    return scene
+
+
+def _fallback_scene_focus_for_slide_type(slide_type):
+    slide_type = _fallback_clean_text(slide_type, 'story').lower()
+    return {
+        'hook': (0.56, 0.48),
+        'problem': (0.52, 0.52),
+        'stakes': (0.5, 0.5),
+        'solution': (0.58, 0.5),
+        'how_it_works': (0.5, 0.46),
+        'impact': (0.54, 0.48),
+        'proof': (0.52, 0.46),
+        'business_model': (0.55, 0.5),
+        'vision': (0.56, 0.44),
+        'call_to_action': (0.54, 0.46),
+    }.get(slide_type, (0.5, 0.5))
+
+
+def _fallback_build_scene_visual(topic, slide_type, palette, seed, variant='presentation'):
+    scene = _fallback_generate_scene_image(topic, slide_type, palette, (1280, 960), seed + 17)
+    scene = _fallback_apply_scene_treatment(scene, palette, variant)
+    focus_x, focus_y = _fallback_scene_focus_for_slide_type(slide_type)
+    return _fallback_resize_cover(scene, (1024, 1024), focus_x=focus_x, focus_y=focus_y)
+
+
+def _fallback_build_scene_poster(topic, slide_type, palette, seed, variant='presentation'):
+    topic = _fallback_clean_text(topic, 'generic').lower()
+    slide_type = _fallback_clean_text(slide_type, 'story').lower()
+    variant = _fallback_clean_text(variant, 'presentation').lower()
+    rnd = random.Random(seed)
+    canvas = _fallback_gradient_canvas((1024, 1024), palette['bg1'], palette['bg0'], palette['bg2']).convert('RGBA')
+    draw = ImageDraw.Draw(canvas)
+    border_color = _fallback_hex_to_rgba(palette['line'], 60)
+    line_color = _fallback_hex_to_rgba(palette['line'], 92)
+    accent = _fallback_hex_to_rgba(palette['accent'], 196)
+    accent2 = _fallback_hex_to_rgba(palette['accent2'], 188)
+    panel_fill = _fallback_hex_to_rgba(palette['panel'], 176)
+    panel_soft = _fallback_hex_to_rgba(palette['panel2'], 156)
+
+    _fallback_add_glow(canvas, (824, 184), 226, palette['accent'], alpha=56 if variant == 'presentation' else 82, blur=84)
+    _fallback_add_glow(canvas, (190, 822), 204, palette['accent2'], alpha=42 if variant == 'presentation' else 72, blur=78)
+    draw.rounded_rectangle((24, 24, 1000, 1000), radius=58, outline=border_color, width=2)
+    draw.line((122, 108, 770, 108), fill=line_color, width=3)
+    for x, fill in ((82, accent), (106, accent2), (126, _fallback_hex_to_rgba(palette['line'], 96))):
+        draw.ellipse((x, 94, x + 14, 108), fill=fill)
+
+    base_scene = _fallback_generate_scene_image(topic, slide_type, palette, (1280, 960), seed + 17)
+    base_scene = _fallback_apply_scene_treatment(base_scene, palette, variant)
+
+    def make_scene_card(card_size, focus_x=0.5, focus_y=0.5, radius=36):
+        crop = _fallback_resize_cover(base_scene, card_size, focus_x=focus_x, focus_y=focus_y)
+        return _fallback_round_image(crop, radius=radius, border=border_color)
+
+    hero_focus = {
+        'hook': (0.56, 0.48),
+        'problem': (0.52, 0.52),
+        'stakes': (0.5, 0.5),
+        'solution': (0.58, 0.5),
+        'how_it_works': (0.5, 0.46),
+        'impact': (0.54, 0.48),
+        'proof': (0.52, 0.46),
+        'business_model': (0.55, 0.5),
+        'vision': (0.56, 0.44),
+        'call_to_action': (0.54, 0.46),
+    }.get(slide_type, (0.5, 0.5))
+
+    hero_size = (764, 646)
+    hero_card = make_scene_card(hero_size, focus_x=hero_focus[0], focus_y=hero_focus[1], radius=44)
+    _fallback_paste_card(canvas, hero_card, (130, 182), shadow_alpha=48, shadow_offset=(0, 18))
+
+    if variant == 'presentation':
+        left_card = make_scene_card((172, 238), focus_x=0.28, focus_y=0.56, radius=28)
+        right_card = make_scene_card((176, 240), focus_x=0.74, focus_y=0.42, radius=28)
+        _fallback_paste_card(canvas, left_card, (78, 540), shadow_alpha=28, shadow_offset=(0, 10))
+        _fallback_paste_card(canvas, right_card, (770, 222), shadow_alpha=28, shadow_offset=(0, 10))
+        draw.rounded_rectangle((106, 146, 248, 194), radius=24, fill=panel_fill)
+        draw.rounded_rectangle((758, 824, 924, 874), radius=24, fill=panel_fill)
+        draw.rounded_rectangle((792, 846, 886, 856), radius=5, fill=line_color)
+        draw.line((154, 876, 872, 876), fill=_fallback_hex_to_rgba(palette['line'], 40), width=3)
+    elif variant == 'animated':
+        back_left = make_scene_card((216, 280), focus_x=0.24, focus_y=0.4, radius=30)
+        back_right = make_scene_card((216, 280), focus_x=0.78, focus_y=0.58, radius=30)
+        _fallback_paste_card(canvas, back_left, (94, 230), shadow_alpha=22, shadow_offset=(0, 8))
+        _fallback_paste_card(canvas, back_right, (714, 252), shadow_alpha=22, shadow_offset=(0, 8))
+        for _ in range(16):
+            x = rnd.randint(118, 918)
+            y = rnd.randint(150, 902)
+            r = rnd.randint(2, 5)
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=accent if rnd.random() > 0.5 else accent2)
+        draw.line((188, 786, 378, 702, 594, 736, 842, 628), fill=accent, width=10)
+        draw.line((214, 706, 364, 640, 566, 686, 806, 566), fill=accent2, width=8)
+        draw.rounded_rectangle((106, 146, 232, 194), radius=24, fill=panel_fill)
+        draw.rounded_rectangle((792, 150, 920, 198), radius=24, fill=panel_soft)
+    elif variant == 'cartoon':
+        sticker = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
+        sticker_draw = ImageDraw.Draw(sticker)
+        sticker_draw.ellipse((724, 160, 928, 364), fill=_fallback_hex_to_rgba(palette['accent'], 84))
+        sticker_draw.ellipse((748, 184, 904, 340), fill=_fallback_hex_to_rgba(palette['panel'], 210), outline=_fallback_hex_to_rgba(palette['line'], 132), width=4)
+        sticker_draw.ellipse((790, 222, 862, 294), fill=accent2)
+        sticker_draw.rounded_rectangle((110, 786, 364, 882), radius=34, fill=panel_fill, outline=_fallback_hex_to_rgba(palette['line'], 112), width=3)
+        sticker_draw.rounded_rectangle((160, 826, 314, 844), radius=9, fill=line_color)
+        sticker = sticker.filter(ImageFilter.GaussianBlur(radius=0.2))
+        canvas.alpha_composite(sticker)
+        draw.arc((164, 120, 862, 786), start=208, end=328, fill=accent, width=12)
+        for cx, cy, rr in ((188, 226, 20), (866, 408, 16), (774, 758, 22)):
+            draw.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), fill=accent2)
+
+    return canvas.convert('RGB')
+
+
 def _fallback_build_editorial_illustration(topic, slide_type, palette, seed):
     canvas = _fallback_gradient_canvas((1024, 1024), palette['bg1'], palette['bg0'], palette['bg2']).convert('RGBA')
     draw = ImageDraw.Draw(canvas)
@@ -1329,29 +2622,114 @@ def _fallback_generate_vector_image_meta(idea, slide, index, image_options=None,
     seed = _fallback_hash_seed(idea, slide.get('title'), slide.get('subtitle'), slide_type, style_key, index)
     suggestion = _fallback_clean_text(slide.get('visual_suggestion'), slide.get('title') or 'Concept illustration')
     topic = _fallback_topic_bucket(idea, slide)
-    illustration = _fallback_build_editorial_illustration(topic, slide_type, palette, seed)
+    style_family = _fallback_style_family(style_key)
+    model_label, repo_id = _fallback_style_model_meta(style_key)
+
+    if style_family == 'abstract':
+        illustration = _fallback_build_abstract_illustration(topic, slide_type, palette, seed)
+    elif style_family == 'presentation':
+        illustration = _fallback_build_scene_visual(topic, slide_type, palette, seed, variant='presentation')
+    elif style_family == 'animated':
+        illustration = _fallback_build_scene_visual(topic, slide_type, palette, seed, variant='animated')
+    elif style_family == 'cartoon':
+        illustration = _fallback_build_scene_visual(topic, slide_type, palette, seed, variant='cartoon')
+    else:
+        illustration = _fallback_build_editorial_illustration(topic, slide_type, palette, seed)
 
     return {
         'image_url': _fallback_image_to_data_url(illustration, fmt='JPEG', quality=92),
         'image_prompt': suggestion,
-        'image_model': FALLBACK_VECTOR_MODEL_LABEL,
-        'image_repo_id': 'builtin/ventureos-editorial-scenes',
+        'image_model': model_label,
+        'image_repo_id': repo_id,
         'image_status': 'generated',
         'image_error': hosted_error,
     }
 
 
 def _fallback_generate_slide_image_meta(idea, slide, index, image_options=None):
+    model_key = _fallback_clean_text((image_options or {}).get('model_key'), FALLBACK_IMAGE_MODEL_KEY).lower()
+    if model_key == 'ventureos-editorial':
+        return _best_available_fallback_image_meta(
+            idea,
+            slide,
+            index,
+            image_options=image_options,
+        )
     try:
         return _fallback_fetch_hosted_image_meta(idea, slide, index, image_options=image_options)
     except Exception as exc:
-        return _fallback_generate_vector_image_meta(
+        return _best_available_fallback_image_meta(
             idea,
             slide,
             index,
             image_options=image_options,
             hosted_error=str(exc),
         )
+
+
+def _fallback_prepare_progressive_image_meta(idea, slide, index, model_key=None, image_options=None):
+    slide = slide or {}
+    style_key = _fallback_clean_text((image_options or {}).get('style'), 'deck-illustration').lower()
+    variation_key = _fallback_clean_text((image_options or {}).get('variation_key'))
+    model_variant = _fallback_model_variant(model_key)
+    provider_candidates = _fallback_provider_candidates(model_key, slide.get('type'), index)
+    prompt = _fallback_hosted_image_prompt(idea, slide, style_key, index=index)
+    image_size = _fallback_hosted_image_size(slide, index, image_options=image_options)
+    seed = _fallback_hash_seed(
+        idea,
+        slide.get('title'),
+        slide.get('subtitle'),
+        slide.get('type'),
+        style_key,
+        variation_key,
+        model_key,
+        index,
+    )
+    fallback_meta = _best_available_fallback_image_meta(
+        idea=idea,
+        slide=slide,
+        index=index,
+        image_options=image_options,
+    )
+    return {
+        'image_url': '',
+        'image_fallback_url': fallback_meta.get('image_url', ''),
+        'image_fallback_model': fallback_meta.get('image_model', FALLBACK_VECTOR_MODEL_LABEL),
+        'image_fallback_repo_id': fallback_meta.get('image_repo_id', 'builtin/ventureos-neon-editorial'),
+        'image_prompt': prompt,
+        'image_model': model_variant['label'],
+        'image_repo_id': model_variant['repo_id'],
+        'image_status': 'queued',
+        'image_error': '',
+        'image_provider_candidates': provider_candidates,
+        'image_seed': seed,
+        'image_render_size': image_size,
+    }
+
+
+def _fallback_prepare_slides_for_progressive_images(idea, slides, model_key=None, image_options=None):
+    enriched = []
+    selected_indices = sorted(_fallback_select_image_slide_indices(slides, image_options))
+    selected_set = set(selected_indices)
+    for index, slide in enumerate(slides or []):
+        item = dict(slide or {})
+        if index in selected_set:
+            item.update(_fallback_prepare_progressive_image_meta(
+                idea=idea,
+                slide=item,
+                index=index,
+                model_key=model_key,
+                image_options=image_options,
+            ))
+        else:
+            item.update(_best_available_fallback_image_meta(
+                idea=idea,
+                slide=item,
+                index=index,
+                image_options=image_options,
+            ))
+        enriched.append(item)
+    return enriched, selected_indices
 
 
 def _fallback_enrich_slides_with_images(idea, slides, market_research=None, model_key=None, image_options=None):
@@ -1378,7 +2756,7 @@ def _fallback_enrich_slides_with_images(idea, slides, market_research=None, mode
             else:
                 use_derived_layout = bool(
                     lead_meta
-                    and lead_meta.get('image_model') == FALLBACK_IMAGE_MODEL_LABEL
+                    and str(lead_meta.get('image_repo_id', '')).startswith('pollinations/')
                     and lead_meta.get('image_url')
                 )
                 if use_derived_layout:
@@ -1390,7 +2768,7 @@ def _fallback_enrich_slides_with_images(idea, slides, market_research=None, mode
                             image_options=image_options,
                         ))
                     except Exception:
-                        item.update(_fallback_generate_vector_image_meta(
+                        item.update(_best_available_fallback_image_meta(
                             idea=idea,
                             slide=item,
                             index=index,
@@ -1398,7 +2776,7 @@ def _fallback_enrich_slides_with_images(idea, slides, market_research=None, mode
                             hosted_error='Hosted lead image remix failed, so VentureOS used a slide-specific illustration.',
                         ))
                 else:
-                    item.update(_fallback_generate_vector_image_meta(
+                    item.update(_best_available_fallback_image_meta(
                         idea=idea,
                         slide=item,
                         index=index,
@@ -2237,21 +3615,46 @@ Use real numbers from context whenever possible. Keep the tone confident, crisp,
             deck_payload = _build_local_deck_payload(idea, context, template_preset)
 
         images_enabled = bool(generate_images and IMAGE_GENERATION_AVAILABLE)
+        progressive_hosted_images = bool(
+            images_enabled
+            and IMAGE_GENERATION_IS_FALLBACK
+            and HOSTED_FALLBACK_ENABLED
+            and _clean_text(image_model, FALLBACK_IMAGE_MODEL_KEY).lower() != 'ventureos-editorial'
+        )
+        pending_image_indices = []
         if images_enabled:
-            deck_payload['slides'] = enrich_slides_with_images(
-                idea=idea,
-                slides=deck_payload.get('slides', []),
-                market_research=m,
-                model_key=image_model,
-                image_options=image_options,
-            )
-            if IMAGE_GENERATION_IS_FALLBACK:
+            if progressive_hosted_images:
+                deck_payload['slides'], pending_image_indices = _fallback_prepare_slides_for_progressive_images(
+                    idea=idea,
+                    slides=deck_payload.get('slides', []),
+                    model_key=image_model,
+                    image_options=image_options,
+                )
                 fallback_notice = (
-                    'Using hosted editorial image generation for the live deck, with illustrated fallback if needed.'
-                    if HOSTED_FALLBACK_ENABLED
-                    else 'Using built-in illustrated scenes so the live deck and PPT still include visuals.'
+                    'Generating unique premium visuals progressively so each slide receives its own topic-aware image.'
                 )
                 generation_notice = f"{generation_notice} {fallback_notice}".strip() if generation_notice else fallback_notice
+            else:
+                enriched_options = dict(image_options or {})
+                enriched_options['model_key'] = image_model
+                deck_payload['slides'] = enrich_slides_with_images(
+                    idea=idea,
+                    slides=deck_payload.get('slides', []),
+                    market_research=m,
+                    model_key=image_model,
+                    image_options=enriched_options,
+                )
+                if IMAGE_GENERATION_IS_FALLBACK:
+                    fallback_notice = (
+                        'Using VentureOS built-in scene visuals so every selected slide gets an immediate topic-aware image while premium renders load.'
+                        if _clean_text(image_model, FALLBACK_IMAGE_MODEL_KEY).lower() == 'ventureos-editorial'
+                        else (
+                            'Using hosted scene image generation for topic-aware deck visuals, with a built-in slide-specific fallback if needed.'
+                            if HOSTED_FALLBACK_ENABLED
+                            else 'Using built-in illustrated scenes so the live deck and PPT still include visuals.'
+                        )
+                    )
+                    generation_notice = f"{generation_notice} {fallback_notice}".strip() if generation_notice else fallback_notice
         deck_payload['image_generation'] = {
             'requested': generate_images,
             'enabled': images_enabled,
@@ -2270,6 +3673,8 @@ Use real numbers from context whenever possible. Keep the tone confident, crisp,
                 (image_options or {}).get('coverage'),
                 'key-slides'
             ),
+            'progressive_enabled': progressive_hosted_images,
+            'pending_indices': pending_image_indices,
         }
         deck_payload['generation_mode'] = generation_mode
         if generation_notice:
@@ -2280,6 +3685,52 @@ Use real numbers from context whenever possible. Keep the tone confident, crisp,
     except Exception as e:
         import traceback
         return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+
+@app.route('/slides/image', methods=['POST'])
+def generate_slide_image():
+    data = request.json or {}
+    prompt = _clean_text(data.get('prompt'))
+    provider_candidates = data.get('provider_candidates') or []
+    if not isinstance(provider_candidates, list):
+        provider_candidates = []
+    provider_candidates = [_clean_text(item) for item in provider_candidates if _clean_text(item)]
+    provider_candidates = provider_candidates[:4] or ['flux']
+    seed = int(data.get('seed') or 1)
+    image_size = int(data.get('size') or 512)
+
+    if not prompt:
+        return jsonify({'error': 'No image prompt provided'}), 400
+    if not GOOGLE_IMAGE_ENABLED and not HOSTED_FALLBACK_ENABLED:
+        return jsonify({'error': 'No image provider is enabled'}), 503
+
+    errors = []
+    for provider_model in provider_candidates:
+        try:
+            cache_key = f"{provider_model}|{image_size}|{seed}|{prompt}"
+            image_url = _fallback_fetch_provider_image_data_url(
+                prompt=prompt,
+                provider_model=provider_model,
+                seed=seed,
+                image_size=image_size,
+                cache_key=cache_key,
+            )
+            return jsonify({
+                'image_url': image_url,
+                'image_model': _fallback_provider_label(provider_model),
+                'image_repo_id': _fallback_provider_repo(provider_model),
+                'image_status': 'generated',
+            })
+        except Exception as image_error:
+            errors.append({
+                'provider_model': provider_model,
+                'message': str(image_error),
+            })
+
+    return jsonify({
+        'error': 'All hosted image providers failed',
+        'attempts': errors,
+    }), 502
 
 
 # ── DOWNLOAD PPTX ──────────────────────────────────────────────────────────
@@ -2432,7 +3883,7 @@ def download_pptx():
             pts = (sd.get('content') or sd.get('points') or [])[:5]
             stats = (sd.get('stats') or [])[:3]
             obj = sd.get('objective') or ''
-            vis = sd.get('visual_suggestion') or ''
+            vis = _presentation_visual_summary(idea, sd, i)
             kicker = sd.get('type', 'story').replace('_', ' ').upper()
 
             sl.background.fill.solid()
@@ -3541,7 +4992,7 @@ def download_pptx():
             pts = (sd.get('content') or sd.get('points') or [])[:5]
             stats = (sd.get('stats') or [])[:3]
             obj = sd.get('objective') or ''
-            vis = sd.get('visual_suggestion') or ''
+            vis = _presentation_visual_summary(idea, sd, i)
             kicker = sd.get('type', 'story').replace('_', ' ').upper()
 
             # ── Full background ────────────────────────────────────────────

@@ -100,8 +100,8 @@ IMAGE_STYLE_PRESETS: Dict[str, Dict[str, str]] = {
         "prompt": "premium stylized 3D illustration, refined materials, scenic composition, non-photoreal keynote visual",
     },
     "abstract": {
-        "label": "Abstract Scenic",
-        "prompt": "abstract scenic artwork, atmospheric composition, gradient light, stylized environment, high-end keynote background",
+        "label": "Neon Editorial",
+        "prompt": "topic-faithful neon editorial poster artwork, dark midnight background, electric orange and cyan glow, circuitry, floating dashboards, premium keynote visual",
     },
 }
 
