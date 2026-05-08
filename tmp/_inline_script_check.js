@@ -355,8 +355,22 @@
         if(!response.body){
           throw new Error('No response stream received from the server.');
         }
-        const reader=response.body.getReader(); const decoder=new TextDecoder(); let buffer='';
-        while(true){const{done,value}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});const lines=buffer.split('\n');buffer=lines.pop();for(const line of lines){if(!line.startsWith('data: '))continue;try{handleStreamEvent(JSON.parse(line.slice(6)),results);}catch(e){}}}
+        const reader=response.body.getReader(); const decoder=new TextDecoder(); let buffer=''; let shouldStop=false;
+        while(true){
+          const{done,value}=await reader.read();
+          if(done||shouldStop)break;
+          buffer+=decoder.decode(value,{stream:true});
+          const lines=buffer.split('\n');
+          buffer=lines.pop();
+          for(const line of lines){
+            if(!line.startsWith('data: '))continue;
+            try{
+              const terminalEvent=handleStreamEvent(JSON.parse(line.slice(6)),results);
+              if(terminalEvent){shouldStop=true;break;}
+            }catch(e){}
+          }
+        }
+        if(shouldStop){try{await reader.cancel();}catch(e){}}
       }catch(err){document.getElementById('errBox').textContent='❌ '+err.message;document.getElementById('errBox').style.display='block';}
       finally{document.getElementById('streamStatus').style.display='none';document.getElementById('progressBar').style.display='none';btn.disabled=false;document.getElementById('btnTxt').textContent='Run VentureOS';}
     }
@@ -394,10 +408,10 @@
         setSlidesButtonsVisible(!!(currentContext.pitch && Array.isArray(currentContext.pitch.deck) && currentContext.pitch.deck.length));
         calcFinancials();
         setTimeout(()=>{document.getElementById('chatSection').style.display='block';setTimeout(()=>{document.getElementById('exportBar').style.display='block';},300);},600);
-        return;
+        return true;
       }
 
-      if(event==='error'){document.getElementById('errBox').textContent='❌ '+message;document.getElementById('errBox').style.display='block';return;}
+      if(event==='error'){document.getElementById('errBox').textContent='❌ '+message;document.getElementById('errBox').style.display='block';return true;}
 
       if(event==='market_research') currentContext.market_research=data;
       if(event==='competitor_analysis') currentContext.competitor_analysis=data;
@@ -473,6 +487,7 @@
         container.appendChild(card);
         requestAnimationFrame(()=>{setTimeout(()=>{card.querySelectorAll('.score-bar-fill').forEach(bar=>{bar.style.width=bar.dataset.width;});},150);});
       }
+      return false;
     }
 
     // ── CHAT ──
@@ -986,11 +1001,44 @@
           ordered.push(safeIndex);
         }
       });
+      const uniqueSafe = indices => {
+        const picked = [];
+        const used = new Set();
+        indices.forEach(index => {
+          if (index === null || index === undefined) return;
+          const safeIndex = Math.max(0, Math.min(list.length - 1, index));
+          if (used.has(safeIndex)) return;
+          used.add(safeIndex);
+          picked.push(safeIndex);
+        });
+        return picked;
+      };
+      const heroIndices = uniqueSafe([
+        typeLookup.hook ?? 0,
+        typeLookup.call_to_action ?? (list.length - 1)
+      ]);
+      const keySlideIndices = uniqueSafe([
+        typeLookup.hook ?? 0,
+        typeLookup.problem ?? (list.length > 1 ? 1 : 0),
+        typeLookup.solution ?? Math.min(3, list.length - 1),
+        typeLookup.proof ?? Math.min(6, list.length - 1),
+        typeLookup.call_to_action ?? (list.length - 1)
+      ]);
+      const imageHeavyIndices = uniqueSafe([
+        typeLookup.hook ?? 0,
+        typeLookup.problem ?? (list.length > 1 ? 1 : 0),
+        typeLookup.solution ?? Math.min(3, list.length - 1),
+        typeLookup.how_it_works ?? Math.min(4, list.length - 1),
+        typeLookup.impact ?? Math.min(5, list.length - 1),
+        typeLookup.proof ?? Math.min(6, list.length - 1),
+        typeLookup.vision ?? Math.max(0, list.length - 2),
+        typeLookup.call_to_action ?? (list.length - 1)
+      ]);
       const normalized = cleanText(coverage, 'all').toLowerCase();
       if (normalized === 'all') return list.map((_, index) => index);
-      if (normalized === 'image-heavy') return Array.from({ length: Math.min(list.length, Math.max(7, ordered.length)) }, (_, index) => index);
-      if (normalized === 'hero-only') return ordered.slice(0, 2);
-      return ordered.slice(0, 5);
+      if (normalized === 'image-heavy') return imageHeavyIndices.length ? imageHeavyIndices : ordered;
+      if (normalized === 'hero-only') return heroIndices.length ? heroIndices : (ordered.slice(0, 2) || [0]);
+      return keySlideIndices.length ? keySlideIndices : (ordered.slice(0, 5) || [0]);
     }
 
     function topicPromptFromIdea(idea, slide) {
@@ -1002,6 +1050,7 @@
         { bucket: 'restaurant', keywords: ['restaurant', 'food', 'inventory', 'dining', 'kitchen', 'ingredients', 'chef'], prompt: 'refined restaurant operations scene, chef pass, inventory shelves, premium hospitality workspace, cinematic still life' },
         { bucket: 'housing', keywords: ['housing', 'sublease', 'sublessee', 'subleaser', 'rent', 'rental', 'apartment', 'apartments', 'student housing', 'property', 'lease', 'leasing', 'tenant', 'roommate', 'roommates'], prompt: 'student housing search environment, elevated apartment interiors, urban architecture, leasing journey concept art' },
         { bucket: 'health', keywords: ['health', 'medical', 'medicine', 'med school', 'medical school', 'patient', 'clinic', 'biotech', 'diagnostic', 'care', 'clinical', 'doctor', 'nurse', 'anatomy', 'physiology'], prompt: 'premium medical learning and healthcare concept scene, anatomy study cues, clinical tutoring atmosphere, thoughtful editorial composition' },
+        { bucket: 'climate', keywords: ['climate', 'carbon', 'footprint', 'emissions', 'sustainability', 'sustainable', 'esg', 'energy', 'net zero', 'greenhouse gas', 'ghg', 'decarbonization', 'decarbonisation'], prompt: 'premium climate-tech operations scene, carbon accounting workflow, sustainability reporting atmosphere, elegant energy dashboard, cinematic office environment' },
         { bucket: 'sports', keywords: ['sports', 'football', 'team', 'stadium', 'league'], prompt: 'dramatic sports operations environment, strategy room, stadium energy, premium athletic editorial scene' },
         { bucket: 'finance', keywords: ['finance', 'fintech', 'payment', 'payments', 'revenue', 'bank', 'billing', 'subscription'], prompt: 'premium fintech operations scene, sophisticated financial workspace, screens and objects, editorial mood' },
         { bucket: 'education', keywords: ['education', 'learning', 'student', 'students', 'school', 'college', 'research'], prompt: 'modern learning studio, thoughtful academic environment, premium educational editorial scene' },
@@ -1021,6 +1070,7 @@
         { keywords: ['restaurant', 'food', 'inventory', 'dining', 'kitchen', 'ingredients', 'chef'], prompt: 'stylized restaurant operations editorial scene with supply cues, premium neon accents, and cinematic rhythm' },
         { keywords: ['housing', 'sublease', 'sublessee', 'subleaser', 'rent', 'rental', 'apartment', 'apartments', 'student housing', 'property', 'lease', 'leasing', 'tenant', 'roommate', 'roommates'], prompt: 'stylized student housing editorial scene with modern apartment architecture, search cues, and premium neon wayfinding light' },
         { keywords: ['health', 'medical', 'medicine', 'med school', 'medical school', 'patient', 'clinic', 'biotech', 'diagnostic', 'care', 'clinical', 'doctor', 'nurse', 'anatomy', 'physiology'], prompt: 'stylized medical learning editorial scene with anatomy cues, clinical confidence, and premium neon highlights' },
+        { keywords: ['climate', 'carbon', 'footprint', 'emissions', 'sustainability', 'sustainable', 'esg', 'energy', 'net zero', 'greenhouse gas', 'ghg', 'decarbonization', 'decarbonisation'], prompt: 'stylized climate-tech editorial scene with carbon visibility, clean energy cues, sustainability dashboards, and premium neon highlights' },
         { keywords: ['sports', 'football', 'team', 'stadium', 'league'], prompt: 'stylized sports strategy editorial scene with route energy, performance atmosphere, and premium neon accents' },
         { keywords: ['finance', 'fintech', 'payment', 'payments', 'revenue', 'bank', 'billing', 'subscription'], prompt: 'stylized fintech editorial scene with exchange energy, elegant market cues, and premium neon highlights' },
         { keywords: ['education', 'learning', 'student', 'students', 'school', 'college', 'research'], prompt: 'stylized learning editorial scene with research cues, academic aspiration, and premium neon accents' },
@@ -1038,6 +1088,7 @@
       const weightedBuckets = {
         housing: { 'housing': 6, 'sublease': 8, 'sublessee': 8, 'subleaser': 8, 'rent': 4, 'rental': 4, 'apartment': 6, 'apartments': 6, 'student housing': 9, 'property': 4, 'lease': 5, 'leasing': 5, 'tenant': 5, 'roommate': 5, 'roommates': 5 },
         health: { 'health': 4, 'medical': 8, 'medicine': 8, 'med school': 8, 'medical school': 10, 'patient': 6, 'clinic': 6, 'biotech': 6, 'care': 4, 'diagnostic': 6, 'clinical': 7, 'doctor': 6, 'nurse': 6, 'anatomy': 7, 'physiology': 7 },
+        climate: { 'climate': 8, 'carbon': 10, 'footprint': 9, 'emissions': 9, 'sustainability': 10, 'sustainable': 7, 'esg': 8, 'decarbonization': 10, 'decarbonisation': 10, 'greenhouse gas': 10, 'ghg': 8, 'energy': 6, 'net zero': 10, 'offset': 6, 'offsets': 6, 'small business': 4 },
         education: { 'education': 5, 'learning': 5, 'student': 4, 'students': 4, 'school': 4, 'college': 4, 'research': 4, 'tutor': 7, 'tutoring': 7, 'study': 5, 'training': 5 },
         gaming: { 'game': 6, 'gaming': 6, 'indie': 5, 'developer': 5, 'dev': 4, 'studio': 4, 'creator': 4, 'steam': 4 },
         restaurant: { 'restaurant': 7, 'food': 4, 'inventory': 6, 'dining': 5, 'kitchen': 5, 'ingredients': 5, 'chef': 5 },
@@ -1090,6 +1141,7 @@
         restaurant: ['ingredient crates', 'scanner pulses', 'prep surfaces', 'supply shelves', 'menu-card silhouettes', 'service counters'],
         housing: ['apartment facades', 'map pins', 'keys', 'room cards', 'leasing routes', 'urban residential interiors'],
         health: ['care glyphs', 'pulse rings', 'diagnostic panels', 'clinic interiors', 'medical device silhouettes', 'wellness signals'],
+        climate: ['carbon rings', 'leaf circuits', 'energy bars', 'city skylines', 'emissions pathways', 'sustainability dashboards'],
         sports: ['stadium arcs', 'play routes', 'training dashboards', 'team strategy boards', 'score pulses', 'athletic path lines'],
         finance: ['payment cards', 'ledger routes', 'market graphs', 'wallet tokens', 'trading panels', 'exchange signals'],
         education: ['campus silhouettes', 'learning cards', 'book forms', 'idea bulbs', 'student pathways', 'research markers'],
@@ -1110,6 +1162,7 @@
         hook: {
           housing: 'student housing discovery scene with modern apartment architecture and trusted search cues',
           gaming: 'indie game creator studio scene with polished dev energy and collectible craft',
+          climate: 'climate-tech mission scene with carbon visibility, sustainability reporting, and clean energy confidence',
           software: 'software platform mission scene with product confidence and intelligent automation',
           generic: 'premium startup mission scene with one clear focal subject'
         },
@@ -1117,6 +1170,7 @@
           housing: 'student renters facing fragmented apartment search and unreliable sublease discovery',
           gaming: 'indie creators struggling with scattered tools and limited distribution support',
           health: 'medical learners facing fragmented study support and low-confidence mastery',
+          climate: 'small businesses facing fragmented emissions tracking and low-confidence sustainability reporting',
           software: 'teams facing disconnected systems and manual workflow friction',
           generic: 'teams facing fragmented workflows and avoidable operational friction'
         },
@@ -1124,6 +1178,7 @@
           housing: 'verified housing-matching product scene with trusted listings and guided move-in flow',
           gaming: 'creator platform scene with curated resources, launch tools, and premium support',
           health: 'medical tutoring scene with guided mastery, anatomy cues, and confident study support',
+          climate: 'carbon accounting product scene with emissions tracking, reporting clarity, and sustainability momentum',
           software: 'automation platform scene with elegant workflow orchestration and product clarity',
           generic: 'clean product-world scene with confident problem solving'
         },
@@ -1143,6 +1198,7 @@
         restaurant: 'Restaurant Operations',
         housing: 'Student Housing',
         health: 'Health Tech',
+        climate: 'Climate Tech',
         sports: 'Sports Intelligence',
         finance: 'Fintech',
         education: 'Education',
@@ -1196,6 +1252,15 @@
           problem: 'Signal fragmentation scene',
           solution: 'Clinical decision scene',
           generic: 'Topic-faithful health scene'
+        },
+        climate: {
+          hook: 'Climate mission scene',
+          problem: 'Carbon visibility gap scene',
+          solution: 'Emissions platform scene',
+          how_it_works: 'Sustainability workflow scene',
+          impact: 'Impact reporting scene',
+          proof: 'Adoption and reporting scene',
+          generic: 'Topic-faithful climate scene'
         },
         finance: {
           hook: 'Fintech mission scene',
@@ -1252,7 +1317,11 @@
 
     function presentationImageStatusSummary(slide) {
       const status = cleanText(slide?.image_status).toLowerCase();
+      const previewUrl = cleanText(slide?.image_fallback_url);
+      if (status === 'fallback' && slide?.image_url) return 'Topic-specific fallback image is attached for this slide.';
       if (slide?.image_url) return 'Premium topic image attached.';
+      if (['queued', 'generating'].includes(status) && previewUrl) return 'Topic-specific preview image is attached while the premium render completes.';
+      if (status === 'failed' && previewUrl) return 'Topic-specific fallback image is attached for this slide.';
       if (status === 'failed') return 'Current fallback image is attached for this slide.';
       if (['queued', 'generating'].includes(status)) return 'Topic-specific premium image is still rendering.';
       return 'No image is attached with the current coverage setting.';
@@ -1718,19 +1787,20 @@
     }
 
     function renderFeatureImagePanel(slide, options = {}) {
-      const hasImage = Boolean(slide.image_url);
-      const isPending = !hasImage && ['queued', 'generating'].includes(cleanText(slide.image_status));
+      const displayImageUrl = cleanText(slide.image_url || slide.image_fallback_url);
+      const hasImage = Boolean(displayImageUrl);
+      const isPending = !cleanText(slide.image_url) && ['queued', 'generating'].includes(cleanText(slide.image_status));
       const delay = Number.isFinite(options.delay) ? options.delay : 260;
       const kicker = cleanText(options.kicker, slide.type ? slideTypeLabel(slide.type) : 'Visual');
       const caption = presentationVisualSummary(slide);
       const className = `slide-feature-media motion-item${hasImage ? '' : ' is-placeholder'}${isPending ? ' is-loading' : ''}`;
       const pendingKicker = cleanText(options.pendingKicker, 'Generating Visual');
-      const pendingCaption = cleanText(options.pendingCaption, 'Rendering a topic-specific premium image for this slide.');
+      const pendingCaption = cleanText(options.pendingCaption, 'Showing a topic-specific preview while the premium image renders.');
 
       return `
         <div class="${className}" style="--delay:${delay}ms;">
           ${hasImage
-            ? `<img class="slide-generated-image slide-feature-image" src="${escapeAttr(slide.image_url)}" alt="${escapeAttr(slide.title || 'Generated slide visual')}" crossorigin="anonymous" />`
+            ? `<img class="slide-generated-image slide-feature-image" src="${escapeAttr(displayImageUrl)}" alt="${escapeAttr(slide.title || 'Generated slide visual')}" crossorigin="anonymous" />`
             : '<div class="slide-visual-orbit"></div>'}
           ${hasImage ? '' : `
           <div class="slide-feature-copy">
@@ -1751,8 +1821,9 @@
     }
 
     function renderVisualPanel(slide) {
-      const hasImage = Boolean(slide.image_url);
-      const isPending = !hasImage && ['queued', 'generating'].includes(cleanText(slide.image_status));
+      const displayImageUrl = cleanText(slide.image_url || slide.image_fallback_url);
+      const hasImage = Boolean(displayImageUrl);
+      const isPending = !cleanText(slide.image_url) && ['queued', 'generating'].includes(cleanText(slide.image_status));
       return `
         <div class="slide-visual-panel motion-item" style="--delay:320ms;">
           <div>
@@ -1761,11 +1832,11 @@
           </div>
           <div class="slide-visual-media">
             ${hasImage
-              ? `<img class="slide-generated-image" src="${escapeAttr(slide.image_url)}" alt="${escapeAttr(slide.title || 'Generated slide visual')}" crossorigin="anonymous" />`
+              ? `<img class="slide-generated-image" src="${escapeAttr(displayImageUrl)}" alt="${escapeAttr(slide.title || 'Generated slide visual')}" crossorigin="anonymous" />`
               : '<div class="slide-visual-orbit"></div>'}
           </div>
           ${hasImage ? '' : `<div class="slide-visual-caption">${escapeHtml(isPending
-            ? 'Topic-specific premium image is rendering in the background.'
+            ? 'Topic-specific preview is showing while the premium image renders.'
             : presentationLayoutSummary(slide))}</div>`}
         </div>`;
     }

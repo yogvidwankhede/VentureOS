@@ -102,7 +102,18 @@ HOSTED_PROVIDER_REPOS = {
 
 PREMIUM_FALLBACK_MODEL_LABEL = 'VentureOS Premium Scene Library'
 PREMIUM_FALLBACK_MODEL_REPO = 'local/premium-scene-library'
-PREMIUM_FALLBACK_DIRECT_TOPICS = {'gaming', 'housing'}
+PREMIUM_FALLBACK_DIRECT_TOPICS = {
+    'gaming',
+    'housing',
+    'software',
+    'sports',
+    'education',
+    'restaurant',
+    'health',
+    'finance',
+    'logistics',
+    'climate',
+}
 PREMIUM_FALLBACK_LIBRARY = {
     'gaming': [
         'gaming-hero-a.jpg',
@@ -147,6 +158,12 @@ PREMIUM_FALLBACK_LIBRARY = {
         'interior-sunlit-d.jpg',
         'housing-atrium-b.jpg',
     ],
+    'climate': [
+        'climate-premium-a.jpg',
+        'climate-premium-b.jpg',
+        'gaming-hero-b.jpg',
+        'interior-sunlit-b.jpg',
+    ],
     'finance': [
         'interior-sunlit-b.jpg',
         'gaming-hero-b.jpg',
@@ -183,6 +200,8 @@ PREMIUM_FALLBACK_ASSET_TAGS = {
     'interior-sunlit-b.jpg': ['interior', 'software', 'finance', 'workspace', 'clean', 'modern', 'premium'],
     'interior-sunlit-c.jpg': ['interior', 'restaurant', 'operations', 'inventory', 'warm', 'supply', 'premium'],
     'interior-sunlit-d.jpg': ['interior', 'logistics', 'operations', 'structured', 'workspace', 'modern', 'premium'],
+    'climate-premium-a.jpg': ['climate', 'carbon', 'sustainability', 'energy', 'dashboard', 'reporting', 'city', 'software', 'premium'],
+    'climate-premium-b.jpg': ['climate', 'carbon', 'sustainability', 'esg', 'energy', 'plants', 'reporting', 'workspace', 'premium'],
 }
 
 
@@ -383,13 +402,48 @@ def _fallback_select_image_slide_indices(slides, image_options):
             seen.add(safe_index)
             ordered.append(safe_index)
 
+    def unique_safe(indices):
+        picked = []
+        used = set()
+        for index in indices:
+            if index is None:
+                continue
+            safe_index = max(0, min(len(slides) - 1, index))
+            if safe_index in used:
+                continue
+            used.add(safe_index)
+            picked.append(safe_index)
+        return picked
+
+    hero_indices = unique_safe([
+        type_lookup.get('hook', 0),
+        type_lookup.get('call_to_action', len(slides) - 1),
+    ])
+    key_slide_indices = unique_safe([
+        type_lookup.get('hook', 0),
+        type_lookup.get('problem', 1 if len(slides) > 1 else 0),
+        type_lookup.get('solution', min(3, len(slides) - 1)),
+        type_lookup.get('proof', min(6, len(slides) - 1)),
+        type_lookup.get('call_to_action', len(slides) - 1),
+    ])
+    image_heavy_indices = unique_safe([
+        type_lookup.get('hook', 0),
+        type_lookup.get('problem', 1 if len(slides) > 1 else 0),
+        type_lookup.get('solution', min(3, len(slides) - 1)),
+        type_lookup.get('how_it_works', min(4, len(slides) - 1)),
+        type_lookup.get('impact', min(5, len(slides) - 1)),
+        type_lookup.get('proof', min(6, len(slides) - 1)),
+        type_lookup.get('vision', max(0, len(slides) - 2)),
+        type_lookup.get('call_to_action', len(slides) - 1),
+    ])
+
     if coverage == 'all':
         return set(range(len(slides)))
     if coverage == 'image-heavy':
-        return set(range(min(len(slides), max(7, len(ordered)))))
+        return set(image_heavy_indices or ordered)
     if coverage == 'key-slides':
-        return set(ordered[:5])
-    return set(ordered[:2] or [0])
+        return set(key_slide_indices or ordered[:5])
+    return set(hero_indices or ordered[:2] or [0])
 
 
 def _fallback_svg_data_url(svg_markup):
@@ -422,6 +476,11 @@ def _fallback_topic_bucket(idea, slide):
             'health': 4, 'medical': 8, 'medicine': 8, 'med school': 8, 'medical school': 10, 'patient': 6, 'patients': 6,
             'clinic': 6, 'biotech': 6, 'dermatitis': 7, 'care': 4, 'diagnostic': 6, 'doctor': 6, 'nurse': 6,
             'hospital': 7, 'anatomy': 7, 'physiology': 7, 'clinical': 7,
+        },
+        'climate': {
+            'climate': 8, 'carbon': 10, 'footprint': 9, 'emissions': 9, 'sustainability': 10, 'sustainable': 7,
+            'esg': 8, 'decarbonization': 10, 'decarbonisation': 10, 'greenhouse gas': 10, 'ghg': 8,
+            'energy': 6, 'net zero': 10, 'offset': 6, 'offsets': 6, 'small business': 4,
         },
         'education': {
             'education': 5, 'learning': 5, 'student': 4, 'students': 4, 'school': 4, 'college': 4, 'course': 5,
@@ -477,6 +536,7 @@ def _premium_fallback_asset_candidates(topic, idea='', slide=None):
     focus_tokens.update({
         'housing': {'apartment', 'interior', 'student', 'lease', 'sublease', 'renter', 'residential'},
         'gaming': {'creator', 'studio', 'developer', 'dev', 'collectible', 'tool'},
+        'climate': {'carbon', 'footprint', 'emissions', 'sustainability', 'energy', 'esg', 'reporting'},
         'software': {'workflow', 'dashboard', 'automation', 'platform', 'product'},
         'finance': {'payment', 'billing', 'ledger', 'market', 'exchange'},
         'restaurant': {'inventory', 'kitchen', 'dining', 'supply', 'operations'},
@@ -585,6 +645,7 @@ def _fallback_topic_subject(topic):
         'restaurant': 'refined restaurant operations scene, chef pass, inventory shelves, premium hospitality workspace, cinematic still life',
         'housing': 'student housing search environment, elevated apartment interiors, urban architecture, leasing journey concept art',
         'health': 'premium medical learning and healthcare concept scene, anatomy study cues, clinical tutoring atmosphere, thoughtful editorial composition',
+        'climate': 'premium climate-tech operations scene, carbon accounting dashboard cues, sustainability reporting atmosphere, clean energy and city systems editorial composition',
         'sports': 'dramatic sports operations environment, strategy room, stadium energy, premium athletic editorial scene',
         'finance': 'premium fintech operations scene, sophisticated financial workspace, screens and objects, editorial mood',
         'education': 'modern learning studio, thoughtful academic environment, premium educational editorial scene',
@@ -601,6 +662,7 @@ def _fallback_topic_abstract_subject(topic):
         'restaurant': 'stylized restaurant operations editorial scene with supply cues, premium neon accents, and cinematic rhythm',
         'housing': 'stylized student housing editorial scene with modern apartment architecture, search cues, and premium neon wayfinding light',
         'health': 'stylized medical learning editorial scene with anatomy cues, clinical confidence, and premium neon highlights',
+        'climate': 'stylized climate-tech editorial scene with carbon signals, energy flows, sustainable city cues, and premium neon highlights',
         'sports': 'stylized sports strategy editorial scene with route energy, performance atmosphere, and premium neon accents',
         'finance': 'stylized fintech editorial scene with exchange energy, elegant market cues, and premium neon highlights',
         'education': 'stylized learning editorial scene with research cues, academic aspiration, and premium neon accents',
@@ -630,9 +692,12 @@ _FALLBACK_VISUAL_MOTIFS = {
     'housing': [
         'apartment facades', 'map pins', 'keys', 'room cards', 'leasing routes', 'urban residential interiors'
     ],
-        'health': [
-            'care glyphs', 'pulse rings', 'diagnostic panels', 'clinic interiors', 'anatomy study cues', 'medical device silhouettes'
-        ],
+    'health': [
+        'care glyphs', 'pulse rings', 'diagnostic panels', 'clinic interiors', 'anatomy study cues', 'medical device silhouettes'
+    ],
+    'climate': [
+        'carbon rings', 'leaf circuits', 'energy bars', 'city skylines', 'emissions pathways', 'sustainability dashboards'
+    ],
     'sports': [
         'stadium arcs', 'play routes', 'training dashboards', 'team strategy boards', 'score pulses', 'athletic path lines'
     ],
@@ -659,6 +724,7 @@ _FALLBACK_SLIDE_SUBJECTS = {
         'gaming': 'indie game creator studio scene with polished dev energy and collectible craft',
         'restaurant': 'restaurant operations command scene with premium hospitality rhythm and inventory control',
         'health': 'medical learning mission scene with clinical confidence and guided study atmosphere',
+        'climate': 'climate-tech mission scene with carbon visibility, sustainability reporting, and clean energy confidence',
         'sports': 'sports intelligence scene with strategy energy and performance momentum',
         'finance': 'fintech mission scene with premium transaction energy and market confidence',
         'education': 'learning platform mission scene with aspirational academic energy',
@@ -671,6 +737,7 @@ _FALLBACK_SLIDE_SUBJECTS = {
         'gaming': 'indie creators struggling with scattered tools and limited distribution support',
         'restaurant': 'restaurant teams navigating stock gaps and operational friction',
         'health': 'medical learners facing fragmented study support and low-confidence mastery',
+        'climate': 'small businesses facing fragmented emissions tracking and low-confidence sustainability reporting',
         'sports': 'teams dealing with fragmented decision data and unclear performance signals',
         'finance': 'finance operators facing fragmented ledgers and trust friction',
         'education': 'learners facing fragmented guidance and low clarity',
@@ -686,6 +753,7 @@ _FALLBACK_SLIDE_SUBJECTS = {
         'gaming': 'creator platform scene with curated resources, launch tools, and premium support',
         'restaurant': 'inventory intelligence scene with cleaner kitchen operations and decision support',
         'health': 'medical tutoring scene with guided mastery, anatomy cues, and confident study support',
+        'climate': 'carbon accounting product scene with emissions tracking, reporting clarity, and sustainability momentum',
         'sports': 'sports intelligence scene with clearer coaching signals and confident decisions',
         'finance': 'fintech solution scene with smoother flows and confident transaction design',
         'education': 'learning solution scene with guided discovery and progress clarity',
@@ -819,6 +887,15 @@ def _presentation_visual_summary(idea, slide, index=0):
             'problem': 'Signal fragmentation scene',
             'solution': 'Clinical decision scene',
             'generic': 'Topic-faithful health scene',
+        },
+        'climate': {
+            'hook': 'Climate mission scene',
+            'problem': 'Carbon visibility gap scene',
+            'solution': 'Emissions platform scene',
+            'how_it_works': 'Sustainability workflow scene',
+            'impact': 'Impact reporting scene',
+            'proof': 'Adoption and reporting scene',
+            'generic': 'Topic-faithful climate scene',
         },
         'finance': {
             'hook': 'Fintech mission scene',
@@ -1834,6 +1911,8 @@ def _fallback_scene_family(topic):
         return 'operations'
     if topic == 'health':
         return 'lab'
+    if topic == 'climate':
+        return 'climate'
     if topic == 'sports':
         return 'arena'
     return 'studio'
@@ -2037,6 +2116,46 @@ def _fallback_draw_lab_scene(scene, draw, palette, rnd):
     draw.rounded_rectangle((618, 662, 714, 682), radius=10, fill=line)
 
 
+def _fallback_draw_climate_scene(scene, draw, palette, rnd):
+    width, height = scene.size
+    line = _fallback_hex_to_rgba(palette['line'], 44)
+    panel = _fallback_hex_to_rgba(palette['panel'], 216)
+    panel2 = _fallback_hex_to_rgba(palette['panel2'], 236)
+    accent = _fallback_hex_to_rgba(palette['accent'], 184)
+    accent2 = _fallback_hex_to_rgba(palette['accent2'], 170)
+
+    draw.rounded_rectangle((88, 112, width - 88, height - 150), radius=42, fill=panel)
+    draw.rounded_rectangle((128, 152, width * 0.58, height * 0.48), radius=32, fill=panel2)
+    draw.rounded_rectangle((width * 0.64, 168, width - 132, height * 0.58), radius=30, fill=panel2)
+    draw.rounded_rectangle((140, height * 0.58, width * 0.56, height - 186), radius=30, fill=_fallback_hex_to_rgba(palette['panel2'], 190))
+
+    for idx in range(3):
+        y = 214 + idx * 54
+        draw.rounded_rectangle((170, y, 382 + idx * 32, y + 18), radius=9, fill=line)
+    draw.arc((220, 250, 520, 548), start=196, end=338, fill=accent, width=12)
+    draw.arc((250, 304, 546, 560), start=200, end=330, fill=accent2, width=10)
+    draw.ellipse((356, 330, 448, 422), fill=_fallback_hex_to_rgba(palette['accent2'], 46))
+
+    skyline_base = int(height * 0.66)
+    for idx, bar_h in enumerate((170, 220, 132, 248, 176)):
+        left = 618 + idx * 56
+        draw.rounded_rectangle((left, skyline_base - bar_h, left + 34, skyline_base), radius=10, fill=_fallback_hex_to_rgba(palette['panel'], 226))
+        draw.rounded_rectangle((left + 8, skyline_base - bar_h + 28, left + 26, skyline_base - bar_h + 44), radius=5, fill=line)
+
+    draw.line((156, height - 206, width - 144, height - 256), fill=accent, width=10)
+    draw.line((172, height - 158, width - 118, height - 198), fill=accent2, width=8)
+    for point in [(156, height - 206), (324, height - 230), (526, height - 212), (width - 144, height - 256)]:
+        draw.ellipse((point[0] - 12, point[1] - 12, point[0] + 12, point[1] + 12), fill=accent2)
+
+    leaf_cx = int(width * 0.76)
+    leaf_cy = int(height * 0.76)
+    draw.ellipse((leaf_cx - 82, leaf_cy - 122, leaf_cx + 8, leaf_cy + 12), fill=_fallback_hex_to_rgba(palette['accent'], 96))
+    draw.ellipse((leaf_cx - 8, leaf_cy - 122, leaf_cx + 82, leaf_cy + 12), fill=_fallback_hex_to_rgba(palette['accent2'], 90))
+    draw.line((leaf_cx, leaf_cy - 12, leaf_cx, leaf_cy + 78), fill=line, width=8)
+    draw.line((leaf_cx, leaf_cy + 18, leaf_cx - 32, leaf_cy - 26), fill=line, width=4)
+    draw.line((leaf_cx, leaf_cy + 18, leaf_cx + 32, leaf_cy - 26), fill=line, width=4)
+
+
 def _fallback_draw_arena_scene(scene, draw, palette, rnd):
     width, height = scene.size
     line = _fallback_hex_to_rgba(palette['line'], 44)
@@ -2086,6 +2205,8 @@ def _fallback_generate_scene_image(topic, slide_type, palette, size, seed):
         _fallback_draw_operations_scene(scene, draw, palette, rnd, topic)
     elif family == 'lab':
         _fallback_draw_lab_scene(scene, draw, palette, rnd)
+    elif family == 'climate':
+        _fallback_draw_climate_scene(scene, draw, palette, rnd)
     elif family == 'arena':
         _fallback_draw_arena_scene(scene, draw, palette, rnd)
     else:
@@ -3401,13 +3522,117 @@ def prototype():
     if not idea:
         return jsonify({'error': 'No idea provided'}), 400
     try:
-        llm = get_llm()
+        llm = None
+        try:
+            llm = get_llm()
+        except Exception as llm_error:
+            print(f"[prototype llm unavailable] {llm_error}")
         html, theme_name = run_prototype_generator(
-            idea, product_strategy, llm, seed)
+            idea, product_strategy, llm, seed, context)
         return jsonify({'html': html, 'theme': theme_name})
     except Exception as e:
         import traceback
         return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+
+def _extract_score_reason(scorecard, needle):
+    for entry in scorecard.get('scores') or []:
+        if not isinstance(entry, dict):
+            continue
+        dimension = _clean_text(entry.get('dimension')).lower()
+        if needle in dimension:
+            return _clean_text(entry.get('reason'))
+    return ''
+
+
+def _extract_pitch_titles(context):
+    deck = (context.get('pitch') or {}).get('deck') or []
+    titles = []
+    for slide in deck[:3]:
+        if not isinstance(slide, dict):
+            continue
+        title = _clean_text(slide.get('title'))
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _build_local_chat_reply(idea, context, user_message):
+    market = context.get('market_research', {}) or {}
+    competitors = context.get('competitor_analysis', {}) or {}
+    product = context.get('product_strategy', {}) or {}
+    scorecard = context.get('scorecard', {}) or {}
+
+    question = _clean_text(user_message).lower()
+    market_size = _clean_text(market.get('market_size'), 'the available market')
+    growth_rate = _clean_text(market.get('growth_rate'), 'an attractive growth profile')
+    customer = _clean_text(market.get('target_customer'), 'the clearest customer segment')
+    pain_point = _clean_text(market.get('pain_point'), 'the core user pain')
+    whitespace = _clean_text(competitors.get('whitespace'), 'there is still room for a sharper wedge')
+    strength = _clean_text(scorecard.get('biggest_strength'), 'the pain is real and easy to understand')
+    risk = _clean_text(scorecard.get('biggest_risk'), 'the concept can feel too generic without a tighter wedge')
+    total_score = scorecard.get('total')
+    verdict = _clean_text(scorecard.get('verdict'), 'Needs Refinement')
+    differentiation_reason = _extract_score_reason(scorecard, 'differ')
+    feasibility_reason = _extract_score_reason(scorecard, 'feasib')
+    revenue_reason = _extract_score_reason(scorecard, 'revenue')
+    titles = _extract_pitch_titles(context)
+    features = product.get('mvp_features') or []
+    stacks = product.get('suggested_stack') or []
+    first_feature = _clean_text(features[0].get('feature')) if features and isinstance(features[0], dict) else 'a sharply scoped MVP'
+    first_stack = _clean_text(stacks[0].get('tool')) if stacks and isinstance(stacks[0], dict) else 'a lightweight modern stack'
+
+    if any(word in question for word in ['market', 'tam', 'growth', 'demand', 'size']):
+        return (
+            f"The market case for {idea} is strongest around {customer}. Based on the current analysis, the opportunity is framed as {market_size} with {growth_rate}, and the core pain remains {pain_point}.\n\n"
+            f"The key strategic angle is that {whitespace}. If you want the venture to look stronger to investors, we should tighten the wedge around one urgent use case instead of pitching the whole market at once."
+        )
+
+    if any(word in question for word in ['competitor', 'competition', 'different', 'differentiate', 'whitespace']):
+        differentiation_line = differentiation_reason or whitespace
+        return (
+            f"The clearest differentiation path is not more features, it is sharper focus. Right now the analysis suggests: {differentiation_line}\n\n"
+            f"I would position {idea} around one buyer, one painful workflow, and one trust signal. That makes the story feel more defensible and gives the product a better chance to stand apart from generic incumbents."
+        )
+
+    if any(word in question for word in ['mvp', 'feature', 'build', 'product', 'roadmap']):
+        return (
+            f"If we keep this practical, the MVP should start with {first_feature}. That aligns with the main pain point and keeps the first version easier to ship and test.\n\n"
+            f"On execution, I would keep the build lightweight with {first_stack}, prove retention on one narrow workflow, then expand only after usage data confirms the wedge."
+        )
+
+    if any(word in question for word in ['score', 'fund', 'investor', 'raise', 'vc', 'venture']):
+        score_line = f"{total_score}/100" if isinstance(total_score, (int, float)) else verdict
+        revenue_line = revenue_reason or risk
+        return (
+            f"The current fundability read is {score_line} with a verdict of {verdict}. The strongest part of the story is that {strength}\n\n"
+            f"The main investor concern is that {revenue_line}. To improve the funding case, we should narrow the product story, show a cleaner distribution path, and make monetization feel more concrete."
+        )
+
+    if any(word in question for word in ['pricing', 'revenue', 'monetization', 'business model']):
+        return (
+            f"The revenue story should stay simple at first: charge the customer segment with the most urgent version of the problem, then add premium layers later. The analysis currently points to {customer} as the best starting audience.\n\n"
+            f"My recommendation is to begin with a straightforward subscription or workflow-based SaaS model, then expand into higher-value offerings once adoption proves out. The key is making monetization feel tighter than the current risk: {risk}"
+        )
+
+    if any(word in question for word in ['slide', 'deck', 'pitch', 'story']):
+        title_hint = ', '.join(titles) if titles else 'problem, solution, proof'
+        return (
+            f"The pitch should emphasize a clean narrative arc: pain, wedge, proof, and expansion. Your current deck themes already point in that direction, especially around {title_hint}.\n\n"
+            f"If we want the story to land better, I would make the opening claim more specific, tie every slide back to {pain_point}, and keep repeating the strongest investor signal: {strength}"
+        )
+
+    if any(word in question for word in ['next', 'what should i do', 'priority', 'first']):
+        return (
+            f"My next move would be to narrow {idea} into one testable wedge for {customer}. Start by proving one urgent workflow, not the full platform vision.\n\n"
+            f"In parallel, tighten the deck around the biggest strength and biggest risk: {strength} But we still need to solve for this: {risk}"
+        )
+
+    feasibility_line = feasibility_reason or 'a focused MVP looks very buildable'
+    return (
+        f"Here is the current VentureOS read on {idea}: the opportunity is promising because {strength}. The main issue is that {risk}\n\n"
+        f"If I were guiding the next step, I would focus on {customer}, solve {pain_point}, and keep the first product scoped so that {feasibility_line}. Ask me about market, competitors, MVP, monetization, or fundraising and I will answer from that angle."
+    )
 
 
 # ── CHAT ───────────────────────────────────────────────────────────────────
@@ -3423,7 +3648,11 @@ def chat():
         return jsonify({'error': 'No message provided'}), 400
 
     try:
-        llm = get_llm()
+        llm = None
+        try:
+            llm = get_llm()
+        except Exception as llm_error:
+            print(f"[chat llm unavailable] {llm_error}")
         system_prompt = f"""You are VentureOS, an expert startup advisor and co-founder AI.
 
 The user has already analyzed this startup idea: "{idea}"
@@ -3445,8 +3674,14 @@ Be specific, honest, and actionable. Keep responses concise — 2-4 paragraphs m
                 lc_messages.append(AIMessage(content=msg['content']))
         lc_messages.append(HumanMessage(content=user_message))
 
-        response = llm.invoke(lc_messages)
-        return jsonify({'reply': response.content})
+        if llm is not None:
+            try:
+                response = llm.invoke(lc_messages)
+                return jsonify({'reply': response.content, 'source': 'llm'})
+            except Exception as llm_error:
+                print(f"[chat local fallback] {llm_error}")
+
+        return jsonify({'reply': _build_local_chat_reply(idea, context, user_message), 'source': 'local-fallback'})
 
     except Exception as e:
         import traceback
@@ -3462,7 +3697,11 @@ def pivot():
     if not idea:
         return jsonify({'error': 'No idea provided'}), 400
     try:
-        llm = get_llm()
+        llm = None
+        try:
+            llm = get_llm()
+        except Exception as llm_error:
+            print(f"[pivot llm unavailable] {llm_error}")
         result = run_pivot_suggester(
             idea,
             context.get('market_research', {}),

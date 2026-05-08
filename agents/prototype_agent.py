@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import os
 import re
 import random
+import html
 load_dotenv()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -635,6 +636,655 @@ def _safety_css() -> str:
 </style>"""
 
 
+def _safe_text(value, fallback=""):
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        text = value.strip()
+        return text or fallback
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        for key in ("feature", "tool", "milestone", "model", "reason", "description", "target_customer", "pain_point"):
+            candidate = value.get(key)
+            if candidate:
+                return _safe_text(candidate, fallback)
+        return fallback
+    return str(value).strip() or fallback
+
+
+def _safe_list(values, limit=None):
+    items = []
+    for value in values or []:
+        text = _safe_text(value)
+        if text:
+            items.append(text)
+    if limit is not None:
+        return items[:limit]
+    return items
+
+
+def _idea_title(idea: str) -> str:
+    cleaned = re.sub(r"^\s*(an?|the)\s+", "", idea.strip(), flags=re.IGNORECASE)
+    words = cleaned.split()
+    return " ".join(words[:6]) if words else "Premium Product"
+
+
+def _idea_tagline(idea: str) -> str:
+    cleaned = idea.strip().rstrip(".")
+    if not cleaned:
+        return "Premium product experience"
+    if cleaned[0].islower():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+def _prototype_field(product_strategy, context, *keys, fallback=""):
+    sources = [product_strategy or {}, context.get("market_research", {}) if isinstance(context, dict) else {}]
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = source.get(key)
+            text = _safe_text(value)
+            if text:
+                return text
+    return fallback
+
+
+def _prototype_feature_list(product_strategy, context):
+    features = []
+    if isinstance(product_strategy, dict):
+        for entry in product_strategy.get("mvp_features", [])[:6]:
+            if isinstance(entry, dict) and entry.get("feature"):
+                features.append(_safe_text(entry.get("feature")))
+    if not features and isinstance(context, dict):
+        deck = (context.get("pitch") or {}).get("deck") or []
+        for slide in deck[:3]:
+            points = slide.get("key_points") if isinstance(slide, dict) else []
+            features.extend(_safe_list(points, limit=2))
+            if len(features) >= 6:
+                break
+    if not features:
+        features = [
+            "Focused onboarding flow",
+            "Core workflow automation",
+            "Decision-ready reporting",
+            "Team collaboration layer",
+            "Analytics and feedback loops",
+            "Admin visibility and controls",
+        ]
+    return features[:6]
+
+
+def _prototype_steps(product_strategy):
+    timeline = []
+    if isinstance(product_strategy, dict):
+        for entry in product_strategy.get("build_timeline", [])[:3]:
+            if isinstance(entry, dict):
+                title = _safe_text(entry.get("milestone") or entry.get("week"))
+                desc = _safe_text(entry.get("description") or entry.get("reason") or entry.get("milestone"))
+                if title:
+                    timeline.append((title, desc or "Focused delivery milestone"))
+    if not timeline:
+        timeline = [
+            ("Connect your workflow", "Bring the first high-friction process into one clean system."),
+            ("Launch the core loop", "Activate the smallest version that proves usage and retention."),
+            ("Scale what converts", "Expand only after the signal is clear and the economics hold."),
+        ]
+    return timeline[:3]
+
+
+def _prototype_pricing(product_strategy):
+    models = []
+    if isinstance(product_strategy, dict):
+        for entry in product_strategy.get("monetization", [])[:3]:
+            if isinstance(entry, dict):
+                model = _safe_text(entry.get("model"))
+                if model:
+                    models.append(model)
+    if not models:
+        models = ["Starter", "Growth", "Scale"]
+    while len(models) < 3:
+        models.append(["Growth", "Scale", "Enterprise"][len(models) - 1])
+    return [
+        {
+            "tier": models[0],
+            "price": "29",
+            "desc": "For individual operators validating the first workflow.",
+        },
+        {
+            "tier": models[1],
+            "price": "99",
+            "desc": "For growing teams that need adoption, analytics, and collaboration.",
+        },
+        {
+            "tier": models[2],
+            "price": "Custom",
+            "desc": "For multi-team rollouts, integrations, and white-glove support.",
+        },
+    ]
+
+
+def _local_prototype_css() -> str:
+    return """
+<style>
+  .vo-page { position: relative; overflow: hidden; }
+  .vo-page::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(circle at 12% 12%, rgba(var(--accent-rgb), 0.16), transparent 28%),
+      radial-gradient(circle at 88% 18%, rgba(var(--accent-rgb), 0.12), transparent 24%),
+      radial-gradient(circle at 82% 78%, rgba(var(--accent-rgb), 0.10), transparent 26%);
+    opacity: 0.9;
+  }
+  .vo-grid-2 { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 34px; align-items: center; }
+  .vo-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+  .vo-card, .vo-stat, .vo-price, .vo-proof, .vo-usecase, .vo-step, .vo-compare-row {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    box-shadow: var(--sh-sm);
+    backdrop-filter: blur(8px);
+  }
+  .vo-hero {
+    padding: 96px 0 64px;
+    position: relative;
+  }
+  .vo-hero-copy h1 { max-width: 11ch; margin-bottom: 18px; }
+  .vo-hero-copy p { font-size: 18px; max-width: 56ch; }
+  .vo-hero-actions { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 30px; }
+  .vo-hero-note { margin-top: 18px; font-size: 13px; color: var(--text-3); }
+  .vo-visual {
+    min-height: 520px;
+    border-radius: 30px;
+    border: 1px solid var(--border2);
+    background:
+      linear-gradient(160deg, rgba(var(--accent-rgb), 0.22), transparent 42%),
+      linear-gradient(210deg, rgba(var(--accent-rgb), 0.08), transparent 55%),
+      var(--surface);
+    position: relative;
+    overflow: hidden;
+    box-shadow: var(--sh-lg);
+  }
+  .vo-visual::before,
+  .vo-visual::after {
+    content: '';
+    position: absolute;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(var(--accent-rgb), 0.28), transparent 68%);
+    filter: blur(8px);
+  }
+  .vo-visual::before { width: 320px; height: 320px; right: -80px; top: -60px; }
+  .vo-visual::after { width: 260px; height: 260px; left: -60px; bottom: -40px; }
+  .vo-window {
+    position: absolute;
+    inset: 42px;
+    border-radius: 24px;
+    border: 1px solid rgba(var(--accent-rgb), 0.30);
+    background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.08), rgba(255,255,255,0.00) 18%), var(--surface2);
+    overflow: hidden;
+  }
+  .vo-window-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .vo-dot { width: 9px; height: 9px; border-radius: 50%; background: rgba(var(--accent-rgb), 0.9); box-shadow: 0 0 16px rgba(var(--accent-rgb), 0.4); }
+  .vo-window-body { padding: 22px; display: grid; gap: 16px; }
+  .vo-chart {
+    height: 170px;
+    border-radius: 20px;
+    background: linear-gradient(180deg, rgba(var(--accent-rgb), 0.12), rgba(255,255,255,0.02)), var(--surface3);
+    position: relative;
+    overflow: hidden;
+  }
+  .vo-chart svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .vo-mini-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .vo-metric {
+    min-height: 112px;
+    border-radius: 18px;
+    border: 1px solid var(--border);
+    background: rgba(var(--accent-rgb), 0.07);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+  .vo-metric-label { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+  .vo-metric-value { font-size: 28px; font-weight: 600; color: var(--text); }
+  .vo-band { padding: 28px 0 16px; }
+  .vo-stat { padding: 22px; }
+  .vo-stat-label { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 10px; }
+  .vo-stat-value { font-size: 28px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .vo-stat-copy { font-size: 14px; color: var(--text-2); }
+  .vo-section-head { display: flex; justify-content: space-between; gap: 24px; align-items: end; margin-bottom: 28px; }
+  .vo-section-head .sec-desc { margin-bottom: 0; }
+  .vo-card { padding: 24px; }
+  .vo-card h3 { margin-bottom: 10px; }
+  .vo-card p { font-size: 15px; }
+  .vo-kicker { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin-bottom: 12px; font-weight: 700; }
+  .vo-bullets { display: grid; gap: 12px; margin-top: 18px; }
+  .vo-bullet { display: grid; grid-template-columns: 22px 1fr; gap: 12px; align-items: start; }
+  .vo-bullet-mark {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid rgba(var(--accent-rgb), 0.36);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent); font-size: 12px; margin-top: 2px;
+    background: rgba(var(--accent-rgb), 0.08);
+  }
+  .vo-compare {
+    border-radius: 22px;
+    border: 1px solid var(--border);
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .vo-compare-head,
+  .vo-compare-row {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr 1fr;
+    gap: 0;
+  }
+  .vo-compare-head div,
+  .vo-compare-row div { padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .vo-compare-head div { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-3); background: var(--surface2); }
+  .vo-compare-row div:nth-child(3) { color: var(--text); font-weight: 500; }
+  .vo-price { padding: 28px; position: relative; }
+  .vo-price.featured { border-color: rgba(var(--accent-rgb), 0.34); box-shadow: 0 12px 42px rgba(var(--accent-rgb), 0.16); transform: translateY(-6px); }
+  .vo-price-badge {
+    position: absolute; top: 18px; right: 18px;
+    font-size: 11px; font-weight: 700; color: var(--accent);
+    background: rgba(var(--accent-rgb), 0.1); border: 1px solid rgba(var(--accent-rgb), 0.28);
+    padding: 6px 10px; border-radius: 999px;
+  }
+  .vo-price-tier { font-size: 15px; color: var(--text-2); margin-bottom: 8px; }
+  .vo-price-value { font-size: 44px; font-weight: 700; color: var(--text); line-height: 1; margin-bottom: 12px; }
+  .vo-price-value small { font-size: 16px; color: var(--text-3); }
+  .vo-price p { min-height: 72px; }
+  .vo-proof { padding: 24px; }
+  .vo-proof-quote { font-size: 17px; color: var(--text); line-height: 1.7; margin-bottom: 16px; }
+  .vo-proof-meta { font-size: 13px; color: var(--text-3); }
+  .vo-cta {
+    padding: 36px;
+    border-radius: 28px;
+    border: 1px solid rgba(var(--accent-rgb), 0.26);
+    background: linear-gradient(145deg, rgba(var(--accent-rgb), 0.14), rgba(255,255,255,0.02)), var(--surface);
+    box-shadow: var(--sh-lg);
+  }
+  .vo-footer {
+    padding: 18px 0 48px;
+    color: var(--text-3);
+    font-size: 13px;
+  }
+  @media (max-width: 980px) {
+    .vo-grid-2, .vo-grid-3, .vo-mini-grid, .vo-compare-head, .vo-compare-row { grid-template-columns: 1fr; }
+    .vo-section-head { align-items: start; flex-direction: column; }
+    .vo-hero { padding-top: 78px; }
+    .vo-visual { min-height: 420px; }
+    .vo-window { inset: 24px; }
+  }
+</style>
+"""
+
+
+def _build_local_prototype_html(idea: str, product_strategy: dict, context: dict, t: dict) -> str:
+    context = context or {}
+    market = context.get("market_research", {}) or {}
+    scorecard = context.get("scorecard", {}) or {}
+    competitors = context.get("competitor_analysis", {}) or {}
+    features = _prototype_feature_list(product_strategy, context)
+    steps = _prototype_steps(product_strategy)
+    pricing = _prototype_pricing(product_strategy)
+
+    title = _idea_title(idea)
+    tagline = _idea_tagline(idea)
+    customer = _prototype_field(product_strategy, context, "target_customer", fallback="modern teams with a painful recurring workflow")
+    pain_point = _prototype_field(product_strategy, context, "pain_point", "opportunity_summary", fallback="manual, fragmented work that slows decisions down")
+    market_size = _safe_text(market.get("market_size"), "Large category")
+    growth_rate = _safe_text(market.get("growth_rate"), "High-growth tailwind")
+    strength = _safe_text(scorecard.get("biggest_strength"), "Clear user pain and a strong reason to switch.")
+    risk = _safe_text(scorecard.get("biggest_risk"), "The concept needs a tighter wedge to avoid feeling generic.")
+    whitespace = _safe_text(competitors.get("whitespace"), "Incumbents are broad, which leaves room for a sharper operator-first product.")
+    total_score = _safe_text(scorecard.get("total"), "—")
+    verdict = _safe_text(scorecard.get("verdict"), "Emerging opportunity")
+    theme_name = html.escape(t["name"])
+
+    feature_cards = "".join(
+        f"""
+        <div class="vo-card reveal">
+          <div class="vo-kicker">Feature {index + 1:02d}</div>
+          <h3>{html.escape(feature)}</h3>
+          <p>{html.escape(f'Turn {pain_point.lower()} into a more confident, measurable workflow for {customer}.')}</p>
+        </div>
+        """
+        for index, feature in enumerate(features[:6])
+    )
+
+    step_cards = "".join(
+        f"""
+        <div class="vo-step vo-card reveal">
+          <div class="vo-kicker">Step {index + 1}</div>
+          <h3>{html.escape(title_text)}</h3>
+          <p>{html.escape(desc)}</p>
+        </div>
+        """
+        for index, (title_text, desc) in enumerate(steps)
+    )
+
+    use_cases = [
+        ("Acquire faster", f"Give {customer} a clearer first-use experience and a faster path to value."),
+        ("Operate smarter", f"Replace fragmented tooling with one confident workflow anchored in {features[0].lower()}."),
+        ("Scale with proof", f"Bring reporting, collaboration, and premium controls into one product story."),
+    ]
+    use_case_cards = "".join(
+        f"""
+        <div class="vo-usecase vo-card reveal">
+          <div class="vo-kicker">{html.escape(kicker)}</div>
+          <p>{html.escape(copy)}</p>
+        </div>
+        """
+        for kicker, copy in use_cases
+    )
+
+    proof_cards = "".join(
+        [
+            f"""
+            <div class="vo-proof reveal">
+              <div class="vo-proof-quote">“{html.escape(strength)}”</div>
+              <div class="vo-proof-meta">Signal from the current scorecard · {html.escape(verdict)}</div>
+            </div>
+            """,
+            f"""
+            <div class="vo-proof reveal">
+              <div class="vo-proof-quote">“{html.escape(whitespace)}”</div>
+              <div class="vo-proof-meta">Whitespace from competitive analysis</div>
+            </div>
+            """,
+            f"""
+            <div class="vo-proof reveal">
+              <div class="vo-proof-quote">“{html.escape(risk)}”</div>
+              <div class="vo-proof-meta">Execution risk to solve next</div>
+            </div>
+            """,
+        ]
+    )
+
+    pricing_cards = "".join(
+        f"""
+        <div class="vo-price{' featured' if index == 1 else ''} reveal">
+          {'<div class="vo-price-badge">Most likely starting plan</div>' if index == 1 else ''}
+          <div class="vo-price-tier">{html.escape(plan['tier'])}</div>
+          <div class="vo-price-value">{html.escape(plan['price'])}{'' if plan['price'] == 'Custom' else '<small>/mo</small>'}</div>
+          <p>{html.escape(plan['desc'])}</p>
+          <div class="vo-bullets">
+            <div class="vo-bullet"><div class="vo-bullet-mark">✓</div><div>{html.escape(features[min(index, len(features)-1)])}</div></div>
+            <div class="vo-bullet"><div class="vo-bullet-mark">✓</div><div>{html.escape('Structured onboarding and measurable workflow value')}</div></div>
+            <div class="vo-bullet"><div class="vo-bullet-mark">✓</div><div>{html.escape('Reporting, collaboration, and premium support paths')}</div></div>
+          </div>
+        </div>
+        """
+        for index, plan in enumerate(pricing)
+    )
+
+    return f"""
+{_local_prototype_css()}
+<div class="vo-page">
+  <nav id="nav">
+    <div class="nav-inner">
+      <div class="nav-brand">
+        <div class="nav-logo">{html.escape(title[:1].upper() or 'V')}</div>
+        <span>{html.escape(title)}</span>
+      </div>
+      <div class="nav-links">
+        <a href="#problem">Problem</a>
+        <a href="#solution">Solution</a>
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+      </div>
+      <div class="nav-btns">
+        <button class="btn btn-outline btn-sm">Book demo</button>
+        <button class="btn btn-accent btn-sm">Get started</button>
+      </div>
+    </div>
+  </nav>
+
+  <section class="vo-hero">
+    <div class="wrap vo-grid-2">
+      <div class="vo-hero-copy reveal">
+        <div class="badge"><span class="badge-pulse"></span> Premium website preview · {theme_name}</div>
+        <h1>{html.escape(title)}</h1>
+        <p>{html.escape(tagline)} for {html.escape(customer)}.</p>
+        <div class="vo-hero-actions">
+          <button class="btn btn-accent btn-xl">Start the workflow</button>
+          <button class="btn btn-outline btn-xl">See the product tour</button>
+        </div>
+        <div class="vo-hero-note">Built from VentureOS analysis so the narrative, positioning, and offer match the underlying startup story.</div>
+      </div>
+      <div class="vo-visual reveal">
+        <div class="vo-window">
+          <div class="vo-window-top">
+            <div class="vo-dot"></div><div class="vo-dot" style="opacity:.7"></div><div class="vo-dot" style="opacity:.45"></div>
+          </div>
+          <div class="vo-window-body">
+            <div class="vo-chart">
+              <svg viewBox="0 0 520 180" preserveAspectRatio="none" aria-hidden="true">
+                <path d="M0 128 C70 126, 90 92, 145 94 S250 138, 305 108 S410 46, 520 62" fill="none" stroke="rgba(var(--accent-rgb),0.95)" stroke-width="4" stroke-linecap="round"/>
+                <path d="M0 146 C70 150, 110 120, 160 124 S248 154, 310 134 S410 98, 520 116" fill="none" stroke="rgba(var(--accent-rgb),0.38)" stroke-width="3" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="vo-mini-grid">
+              <div class="vo-metric">
+                <div class="vo-metric-label">Market size</div>
+                <div class="vo-metric-value">{html.escape(market_size)}</div>
+              </div>
+              <div class="vo-metric">
+                <div class="vo-metric-label">Growth rate</div>
+                <div class="vo-metric-value">{html.escape(growth_rate)}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="vo-band sec-sm">
+    <div class="wrap vo-grid-3">
+      <div class="vo-stat reveal">
+        <div class="vo-stat-label">Target customer</div>
+        <div class="vo-stat-value">{html.escape(customer[:36])}</div>
+        <div class="vo-stat-copy">{html.escape('The segment with the clearest urgency and fastest path to value.')}</div>
+      </div>
+      <div class="vo-stat reveal">
+        <div class="vo-stat-label">Fundability score</div>
+        <div class="vo-stat-value">{html.escape(str(total_score))}</div>
+        <div class="vo-stat-copy">{html.escape(verdict)}</div>
+      </div>
+      <div class="vo-stat reveal">
+        <div class="vo-stat-label">Core promise</div>
+        <div class="vo-stat-value">{html.escape(features[0])}</div>
+        <div class="vo-stat-copy">{html.escape('A focused wedge that can prove traction before broad expansion.')}</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="problem">
+    <div class="wrap vo-grid-2">
+      <div class="reveal">
+        <div class="eyebrow">Problem</div>
+        <h2 class="sec-title">The workflow is still too fragmented.</h2>
+        <p class="sec-desc">{html.escape(pain_point)}</p>
+        <div class="vo-bullets">
+          <div class="vo-bullet"><div class="vo-bullet-mark">1</div><div>{html.escape(pain_point)}</div></div>
+          <div class="vo-bullet"><div class="vo-bullet-mark">2</div><div>{html.escape(whitespace)}</div></div>
+          <div class="vo-bullet"><div class="vo-bullet-mark">3</div><div>{html.escape(risk)}</div></div>
+        </div>
+      </div>
+      <div class="vo-card reveal">
+        <div class="vo-kicker">Why this matters now</div>
+        <h3>{html.escape('A clearer wedge creates a stronger business.')}</h3>
+        <p>{html.escape(strength)}</p>
+        <div class="vo-bullets">
+          <div class="vo-bullet"><div class="vo-bullet-mark">✓</div><div>{html.escape(f'Market momentum: {growth_rate}.')}</div></div>
+          <div class="vo-bullet"><div class="vo-bullet-mark">✓</div><div>{html.escape(f'Category size signal: {market_size}.')}</div></div>
+          <div class="vo-bullet"><div class="vo-bullet-mark">✓</div><div>{html.escape('Investors will care more once the wedge and monetization become tighter.')}</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="solution" style="background:var(--surface2);">
+    <div class="wrap">
+      <div class="vo-section-head reveal">
+        <div>
+          <div class="eyebrow">Solution</div>
+          <h2 class="sec-title">One premium operating layer, not another scattered tool.</h2>
+        </div>
+        <p class="sec-desc">{html.escape('The strongest version of this product wins by simplifying the first high-value workflow and then expanding from proof, not from sprawl.')}</p>
+      </div>
+      <div class="vo-grid-3">
+        {feature_cards}
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="features">
+    <div class="wrap">
+      <div class="vo-section-head reveal">
+        <div>
+          <div class="eyebrow">How it works</div>
+          <h2 class="sec-title">A crisp flow from first use to repeat value.</h2>
+        </div>
+        <p class="sec-desc">{html.escape('The product should feel immediate, guided, and measurable from day one.')}</p>
+      </div>
+      <div class="vo-grid-3">
+        {step_cards}
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="compare" style="background:var(--surface2);">
+    <div class="wrap">
+      <div class="eyebrow reveal">Differentiation</div>
+      <h2 class="sec-title reveal">Why this lands better than generic alternatives.</h2>
+      <div class="vo-compare reveal">
+        <div class="vo-compare-head">
+          <div>Dimension</div>
+          <div>Typical alternative</div>
+          <div>{html.escape(title)}</div>
+        </div>
+        <div class="vo-compare-row">
+          <div>Positioning</div>
+          <div>Broad, multi-purpose, harder to trust</div>
+          <div>Sharper wedge for {html.escape(customer)}</div>
+        </div>
+        <div class="vo-compare-row">
+          <div>Workflow</div>
+          <div>Multiple disconnected steps</div>
+          <div>{html.escape(features[0])} as the entry point</div>
+        </div>
+        <div class="vo-compare-row">
+          <div>Proof story</div>
+          <div>Feature-heavy, weak narrative</div>
+          <div>Outcome-driven story anchored in real pain</div>
+        </div>
+        <div class="vo-compare-row">
+          <div>Expansion path</div>
+          <div>Too much too early</div>
+          <div>Start focused, scale after traction</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="use-cases">
+    <div class="wrap">
+      <div class="vo-section-head reveal">
+        <div>
+          <div class="eyebrow">Use cases</div>
+          <h2 class="sec-title">Built to convert first value into long-term momentum.</h2>
+        </div>
+        <p class="sec-desc">{html.escape('The best landing pages make the value obvious within seconds, then guide the user into one clear next action.')}</p>
+      </div>
+      <div class="vo-grid-3">
+        {use_case_cards}
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="proof" style="background:var(--surface2);">
+    <div class="wrap">
+      <div class="eyebrow reveal">Proof</div>
+      <h2 class="sec-title reveal">The strongest signals already point to a compelling opportunity.</h2>
+      <div class="vo-grid-3">
+        {proof_cards}
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="pricing">
+    <div class="wrap">
+      <div class="vo-section-head reveal">
+        <div>
+          <div class="eyebrow">Pricing</div>
+          <h2 class="sec-title">Start simple, then expand into premium value.</h2>
+        </div>
+        <p class="sec-desc">{html.escape('A clean pricing ladder keeps the offer understandable while leaving room for higher-value contracts later.')}</p>
+      </div>
+      <div class="vo-grid-3">
+        {pricing_cards}
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap">
+      <div class="vo-cta reveal">
+        <div class="eyebrow">Call to action</div>
+        <h2 class="sec-title">Turn the idea into a premium go-to-market experience.</h2>
+        <p class="sec-desc" style="margin-bottom:28px;">{html.escape(f'This local website preview was generated from your VentureOS analysis so it can keep moving even when cloud model quota is exhausted. The story, sections, and offer still reflect {title}.')}</p>
+        <div class="vo-hero-actions">
+          <button class="btn btn-accent btn-lg">Request the first build</button>
+          <button class="btn btn-outline btn-lg">Review the strategy</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="vo-footer">
+    <div class="wrap">
+      <div class="divider" style="margin-bottom:20px;"></div>
+      <div style="display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap;">
+        <div>{html.escape(title)} · Premium website concept preview</div>
+        <div>Theme · {theme_name}</div>
+      </div>
+    </div>
+  </footer>
+</div>
+<script>
+  const nav=document.getElementById('nav');
+  window.addEventListener('scroll',()=>nav.classList.toggle('scrolled',window.scrollY>12),{{passive:true}});
+  document.querySelectorAll('.reveal').forEach((el,index)=>{{
+    el.style.opacity='0';
+    el.style.transform='translateY(14px)';
+    el.style.transition='opacity 0.6s ease, transform 0.6s ease';
+    setTimeout(()=>{{el.style.opacity='1';el.style.transform='translateY(0)';}}, 80 + index * 35);
+  }});
+  document.querySelectorAll('a[href^="#"]').forEach(a=>{{
+    a.addEventListener('click',e=>{{
+      const t=document.querySelector(a.getAttribute('href'));
+      if(t){{e.preventDefault();t.scrollIntoView({{behavior:'smooth',block:'start'}});}}
+    }});
+  }});
+</script>
+"""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-layout prompt instructions — tells the LLM exactly what structure to build
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1152,13 +1802,14 @@ MOCKUP TEMPLATE — use wherever [FULL MOCKUP] appears above:
 Return ONLY the HTML starting with <nav. No DOCTYPE, html, head, body tags, no markdown, no explanation."""
 
 
-def run_prototype_generator(idea: str, product_strategy: dict, llm, seed: int = None) -> tuple:
+def run_prototype_generator(idea: str, product_strategy: dict, llm, seed: int = None, context: dict = None) -> tuple:
     if seed is None or seed < 0:
         seed = random.randint(0, len(LAYOUT_TEMPLATES) - 1)
     else:
         seed = seed % len(LAYOUT_TEMPLATES)
 
     t = LAYOUT_TEMPLATES[seed]
+    context = context or {}
 
     features, target_customer, pain_point = [
     ], 'businesses and professionals', 'inefficient manual processes'
@@ -1175,29 +1826,35 @@ def run_prototype_generator(idea: str, product_strategy: dict, llm, seed: int = 
     layout_instructions = LAYOUT_PROMPTS.get(
         t["id"], "Use the hero-centered layout.")
 
-    prompt = ChatPromptTemplate.from_template(MASTER_PROMPT)
-    chain = prompt | llm
-    response = chain.invoke({
-        "idea": idea,
-        "layout_name": t["name"],
-        "layout_desc": t["description"],
-        "features": ', '.join(features) if features else 'core product capabilities',
-        "target_customer": target_customer,
-        "pain_point": pain_point,
-        "layout_instructions": layout_instructions,
-    })
+    if llm is None:
+        body = _build_local_prototype_html(idea, product_strategy, context, t)
+    else:
+        prompt = ChatPromptTemplate.from_template(MASTER_PROMPT)
+        chain = prompt | llm
+        try:
+            response = chain.invoke({
+                "idea": idea,
+                "layout_name": t["name"],
+                "layout_desc": t["description"],
+                "features": ', '.join(features) if features else 'core product capabilities',
+                "target_customer": target_customer,
+                "pain_point": pain_point,
+                "layout_instructions": layout_instructions,
+            })
 
-    body = response.content.strip()
-    body = re.sub(r"```html\s*", "", body)
-    body = re.sub(r"```\s*$", "", body, flags=re.MULTILINE)
-    body = body.strip()
-    body = re.sub(r"(?i)<!DOCTYPE[^>]*>", "", body)
-    body = re.sub(r"(?i)<html[^>]*>|</html>", "", body)
-    body = re.sub(r"(?i)<body[^>]*>|</body>", "", body)
-    hm = re.search(r"(?i)<head>.*?</head>", body, re.DOTALL)
-    if hm:
-        body = body[hm.end():]
-    body = body.strip()
+            body = response.content.strip()
+            body = re.sub(r"```html\s*", "", body)
+            body = re.sub(r"```\s*$", "", body, flags=re.MULTILINE)
+            body = body.strip()
+            body = re.sub(r"(?i)<!DOCTYPE[^>]*>", "", body)
+            body = re.sub(r"(?i)<html[^>]*>|</html>", "", body)
+            body = re.sub(r"(?i)<body[^>]*>|</body>", "", body)
+            hm = re.search(r"(?i)<head>.*?</head>", body, re.DOTALL)
+            if hm:
+                body = body[hm.end():]
+            body = body.strip()
+        except Exception:
+            body = _build_local_prototype_html(idea, product_strategy, context, t)
 
     title = idea[:50].replace('"', "'")
     desc = idea[:120].replace('"', "'")
